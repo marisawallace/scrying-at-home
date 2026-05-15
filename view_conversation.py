@@ -93,6 +93,32 @@ def time_tag(iso: str, cls: str) -> str:
             f'{html.escape(format_timestamp(iso))}</time>')
 
 
+def attachment_summary(msg: dict) -> Optional[str]:
+    """Describe files uploaded to a message as a single non-redundant line.
+
+    Claude's export records uploads twice: ``files`` lists every uploaded item
+    (images, documents, pasted text) by uuid, while ``attachments`` holds only
+    the subset whose text could be extracted. Counting both double-counts any
+    document, so we report one total and surface any real filenames the export
+    provides (often blank, e.g. for pasted text).
+    """
+    attachments = msg.get("attachments") or []
+    files = msg.get("files") or []
+    count = max(len(attachments), len(files))
+    if count == 0:
+        return None
+
+    names = sorted({
+        item["file_name"]
+        for item in (*attachments, *files)
+        if item.get("file_name")
+    })
+    noun = "file" if count == 1 else "files"
+    if names:
+        return f"{count} {noun}: {', '.join(names)}"
+    return f"{count} {noun}"
+
+
 def conversation_to_markdown(data: dict) -> str:
     """Convert conversation JSON to Markdown format."""
     lines = []
@@ -134,12 +160,9 @@ def conversation_to_markdown(data: dict) -> str:
                     lines.append(f"\n{block_text}\n")
 
         # Note attachments if present
-        attachments = msg.get("attachments", [])
-        files = msg.get("files", [])
-        if attachments:
-            lines.append(f"\n*Attachments: {len(attachments)} file(s)*\n")
-        if files:
-            lines.append(f"\n*Files: {len(files)} file(s)*\n")
+        summary = attachment_summary(msg)
+        if summary:
+            lines.append(f"\n*📎 {summary}*\n")
 
         lines.append("\n---\n")
 
@@ -306,16 +329,10 @@ def conversation_to_html(data: dict, provider: str = "") -> str:
         html_parts.append("""</div>""")
 
         # Note attachments if present
-        attachments = msg.get("attachments", [])
-        files = msg.get("files", [])
-        if attachments or files:
-            attachment_text = []
-            if attachments:
-                attachment_text.append(f"Attachments: {len(attachments)} file(s)")
-            if files:
-                attachment_text.append(f"Files: {len(files)} file(s)")
+        summary = attachment_summary(msg)
+        if summary:
             html_parts.append(f"""
-                    <div class="attachments">{" | ".join(attachment_text)}</div>""")
+                    <div class="attachments">📎 {html.escape(summary)}</div>""")
 
         html_parts.append("""
                 </div>

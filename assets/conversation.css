@@ -122,6 +122,9 @@ body {
     background-attachment: fixed;
     padding: 0;
     min-height: 100vh;
+    /* The timestamp gutter overhangs the centered container to the left; clip
+     * that harmless overhang so it never produces a horizontal scrollbar. */
+    overflow-x: hidden;
 }
 
 /* ----- top bar ----------------------------------------------------------- */
@@ -193,9 +196,10 @@ body {
 .container {
     max-width: 1000px;
     margin: var(--space-xl) auto;
-    /* Extra left padding hosts the timestamp gutter, so message content and
-     * the metadata rule share the container's content-left edge. */
-    padding: 0 var(--space-md) 0 calc(var(--space-md) + var(--gutter-width));
+    /* Symmetric padding keeps the message column horizontally centered on the
+     * page. The timestamp gutter overhangs leftward into the margin whitespace
+     * via its own negative margin (see .gutter). */
+    padding: 0 var(--space-md);
 }
 
 /* ----- metadata ---------------------------------------------------------- */
@@ -234,8 +238,9 @@ body {
     margin-bottom: var(--space-lg);
 }
 
-/* Left gutter — holds the timestamp, revealed on hover. Pulled into the
- * container's left padding so it sits outside the message content column. */
+/* Left gutter — holds the timestamp, revealed on hover. A negative margin
+ * makes it overhang the container's left edge so it sits outside the message
+ * content column without shifting that column off-centre. */
 .gutter {
     flex: 0 0 var(--gutter-width);
     margin-left: calc(-1 * var(--gutter-width));
