@@ -1,21 +1,30 @@
-Vendored runtime dependencies for the interactive picker (interactive_picker.py).
+Vendored runtime dependencies.
 
 Pinned versions:
-  prompt_toolkit==3.0.52
-  wcwidth==0.6.0
+  prompt_toolkit==3.0.52   -- interactive picker (interactive_picker.py)
+  wcwidth==0.6.0           -- prompt_toolkit's only runtime dependency
+  mistune==3.1.4           -- Markdown -> HTML rendering (view_conversation.py)
+  pygments==2.19.2         -- code-block syntax highlighting (view_conversation.py)
 
 Why vendored:
-  The interactive search-result picker is the default UX, so the dependency
+  The interactive search-result picker is the default UX, so its dependency
   must be present without a `pip install` step. prompt_toolkit's 3.x line is
   stable and the surface we use (Application, Window, FormattedTextControl,
   KeyBindings) has been unchanged for years. wcwidth is prompt_toolkit's only
   runtime dependency.
 
+  `view_conversation.py --format html` renders message Markdown to HTML so it
+  reads nicely in a browser. mistune is a pure-Python Markdown parser; pygments
+  highlights fenced code blocks. Both are pure Python with no dependencies.
+
 To refresh:
-  1. pip download --no-deps 'prompt_toolkit==<new>' 'wcwidth==<new>' -d /tmp/dl
-  2. rm -rf vendor/prompt_toolkit vendor/wcwidth
+  1. pip download --no-deps 'prompt_toolkit==<new>' 'wcwidth==<new>' \
+       'mistune==<new>' 'pygments==<new>' -d /tmp/dl
+  2. rm -rf vendor/prompt_toolkit vendor/wcwidth vendor/mistune vendor/pygments
   3. cd vendor && python3 -m zipfile -e /tmp/dl/prompt_toolkit-*.whl .
                   python3 -m zipfile -e /tmp/dl/wcwidth-*.whl .
+                  python3 -m zipfile -e /tmp/dl/mistune-*.whl .
+                  python3 -m zipfile -e /tmp/dl/pygments-*.whl .
      (Keep the .dist-info directories — prompt_toolkit reads its own version
      via importlib.metadata at import time and will fail without them.)
   4. Update the pinned versions above.

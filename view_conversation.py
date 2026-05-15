@@ -7,6 +7,7 @@ Supports multiple LLM providers (Claude, ChatGPT, etc.).
 """
 
 import argparse
+import functools
 import html
 import json
 import os
@@ -134,6 +135,55 @@ def conversation_to_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
+@functools.lru_cache(maxsize=1)
+def _markdown_renderer():
+    """Build a mistune Markdown renderer with Pygments-highlighted code blocks.
+
+    Memoized: the renderer (and its lexer registry) is built once per process.
+    """
+    import vendor_loader  # noqa: F401  -- puts vendored mistune/pygments on sys.path
+    import mistune
+    from mistune.renderers.html import HTMLRenderer
+    from pygments import highlight
+    from pygments.formatters import HtmlFormatter
+    from pygments.lexers import get_lexer_by_name
+    from pygments.util import ClassNotFound
+
+    class _HighlightRenderer(HTMLRenderer):
+        """HTML renderer that runs fenced code blocks through Pygments."""
+
+        def block_code(self, code: str, info: str = None) -> str:
+            if info:
+                try:
+                    lexer = get_lexer_by_name(info.strip().split()[0], stripall=True)
+                except ClassNotFound:
+                    lexer = None
+                if lexer is not None:
+                    return highlight(code, lexer, HtmlFormatter())
+            return "<pre><code>" + mistune.util.escape(code) + "</code></pre>\n"
+
+    return mistune.create_markdown(
+        renderer=_HighlightRenderer(),
+        plugins=["strikethrough", "table", "url"],
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _pygments_css() -> str:
+    """CSS rules for Pygments-highlighted code blocks (the `.highlight` class)."""
+    import vendor_loader  # noqa: F401
+    from pygments.formatters import HtmlFormatter
+
+    return HtmlFormatter().get_style_defs(".highlight")
+
+
+def render_markdown(text: str) -> str:
+    """Render Markdown source text to an HTML fragment."""
+    if not text:
+        return ""
+    return _markdown_renderer()(text)
+
+
 def conversation_to_html(data: dict) -> str:
     """Convert conversation JSON to HTML format with styling."""
     name = html.escape(data.get("name", "(untitled)"))
@@ -249,21 +299,87 @@ def conversation_to_html(data: dict) -> str:
 
         .message-content {
             color: #333;
-            white-space: pre-wrap;
             word-wrap: break-word;
         }
 
-        .message-content pre {
-            background: #f5f5f5;
+        /* Spacing for rendered Markdown block elements. */
+        .message-content > *:first-child { margin-top: 0; }
+        .message-content > *:last-child { margin-bottom: 0; }
+
+        .message-content p { margin: 10px 0; }
+
+        .message-content h1,
+        .message-content h2,
+        .message-content h3,
+        .message-content h4,
+        .message-content h5,
+        .message-content h6 {
+            color: #2c3e50;
+            margin: 18px 0 8px;
+            line-height: 1.3;
+        }
+
+        .message-content h1 { font-size: 1.5em; }
+        .message-content h2 { font-size: 1.3em; }
+        .message-content h3 { font-size: 1.15em; }
+
+        .message-content ul,
+        .message-content ol {
+            margin: 10px 0;
+            padding-left: 1.6em;
+        }
+
+        .message-content li { margin: 4px 0; }
+
+        .message-content blockquote {
+            margin: 10px 0;
+            padding: 4px 16px;
+            border-left: 4px solid #d0d7de;
+            color: #57606a;
+        }
+
+        .message-content a { color: #4a90e2; }
+
+        .message-content table {
+            border-collapse: collapse;
+            margin: 12px 0;
+        }
+
+        .message-content th,
+        .message-content td {
+            border: 1px solid #d0d7de;
+            padding: 6px 12px;
+        }
+
+        .message-content th { background: #f0f0f0; }
+
+        .message-content hr {
+            border: none;
+            border-top: 1px solid #e0e0e0;
+            margin: 20px 0;
+        }
+
+        .message-content pre,
+        .message-content .highlight {
+            background: #f6f8fa;
             padding: 12px;
-            border-radius: 4px;
+            border-radius: 6px;
             overflow-x: auto;
             margin: 10px 0;
         }
 
+        .message-content pre { margin: 0; }
+
         .message-content code {
             font-family: 'Monaco', 'Courier New', monospace;
             font-size: 0.9em;
+        }
+
+        /* Inline code (not inside a highlighted block). */
+        .message-content :not(pre) > code {
+            background: #f0f0f0;
+            padding: 2px 5px;
+            border-radius: 3px;
         }
 
         .attachments {
@@ -274,6 +390,9 @@ def conversation_to_html(data: dict) -> str:
             color: #856404;
             font-size: 0.9em;
         }
+
+        /* Pygments syntax-highlighting rules for fenced code blocks. */
+""" + _pygments_css() + """
     </style>
 </head>
 <body>
@@ -310,17 +429,17 @@ def conversation_to_html(data: dict) -> str:
                 </div>
                 <div class="message-content">""")
 
-        # Message content
+        # Message content. Collect the message text plus any distinct text
+        # content blocks, then render the whole thing as Markdown so it reads
+        # nicely in the browser (headers, lists, code blocks, links, etc.).
         text = msg.get("text", "")
-        if text:
-            html_parts.append(html.escape(text))
-
-        # Add any additional content from content blocks if different
+        segments = [text] if text else []
         for content_block in msg.get("content", []):
             if content_block.get("type") == "text":
                 block_text = content_block.get("text", "")
                 if block_text and block_text != text:
-                    html_parts.append("\n\n" + html.escape(block_text))
+                    segments.append(block_text)
+        html_parts.append(render_markdown("\n\n".join(segments)))
 
         html_parts.append("""</div>""")
 

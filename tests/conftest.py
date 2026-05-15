@@ -145,7 +145,7 @@ def sample_claude_export(fixtures_dir, tmp_path):
                 },
                 {
                     "uuid": "msg-uuid-004",
-                    "text": "Integration testing should use isolated workspaces and real filesystem operations.",
+                    "text": "Integration testing should use **isolated workspaces** and real filesystem operations.\n\n## Key points\n\n- isolated workspaces\n- real filesystem operations\n\n```python\ndef test_example():\n    assert True\n```",
                     "content": [],
                     "sender": "assistant",
                     "created_at": "2025-01-05T14:35:00.000000Z",

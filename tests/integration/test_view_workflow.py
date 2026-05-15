@@ -143,6 +143,15 @@ def test_view_html_format(isolated_workspace, sample_claude_export, repo_root, t
     assert "<head>" in html_content.lower(), "HTML structure missing"
     assert "<body>" in html_content.lower(), "HTML structure missing"
 
+    # Verify: Markdown in messages is rendered to HTML, not shown as raw text
+    assert "<strong>isolated workspaces</strong>" in html_content, "Bold not rendered"
+    assert "<h2>Key points</h2>" in html_content, "Heading not rendered"
+    assert "<li>real filesystem operations</li>" in html_content, "List not rendered"
+    assert "**isolated workspaces**" not in html_content, "Raw Markdown leaked into HTML"
+    # Verify: fenced code block is syntax-highlighted by Pygments
+    assert 'class="highlight"' in html_content, "Code block not highlighted"
+    assert ".highlight" in html_content, "Pygments CSS not embedded"
+
 
 @pytest.mark.integration
 def test_view_nonexistent_conversation(isolated_workspace, sample_claude_export, repo_root, test_env_file):
