@@ -224,9 +224,10 @@ class ResultPicker:
 
         @kb.add("h")
         def _(event):
-            # HTML rendering is only supported for the claude.ai and chatgpt
-            # providers; ignore the key for others rather than exiting.
-            if self.results[self.index].provider in ("claude", "chatgpt"):
+            # HTML rendering is supported for the claude.ai, chatgpt, and
+            # claude-code providers; ignore the key for others rather than
+            # exiting.
+            if self.results[self.index].provider in ("claude", "chatgpt", "claude-code"):
                 self.action = "view-html"
                 event.app.exit(result=self.results[self.index])
 

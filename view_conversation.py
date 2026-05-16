@@ -251,23 +251,22 @@ _SOURCE_LABELS = {
 }
 
 
-def conversation_to_html(data: dict, provider: str = "") -> str:
-    """Convert conversation JSON to HTML format with styling."""
-    name = html.escape(data.get("name", "(untitled)"))
-    source = html.escape(_SOURCE_LABELS.get(provider, provider))
-    uuid = html.escape(data.get("uuid", "unknown"))
-    created = time_tag(data.get("created_at", ""), "localtime")
-    updated = time_tag(data.get("updated_at", ""), "localtime")
-    summary = html.escape(data.get("summary", "")) if data.get("summary") else ""
+def _html_page(title: str, source: str, metadata_html: str,
+               messages_html: str) -> str:
+    """Assemble a full conversation HTML page from inner fragments.
 
-    # Build HTML
-    html_parts = []
-    html_parts.append("""<!DOCTYPE html>
+    `metadata_html` and `messages_html` are HTML fragments placed inside the
+    metadata panel and message list. The surrounding shell — head, theme
+    bootstrap, topbar, stylesheet link, and the local-time `<time>` reformat
+    script — is shared by every provider. `title` and `source` must already
+    be HTML-escaped by the caller.
+    """
+    return """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>""" + name + """</title>
+    <title>""" + title + """</title>
     <script>
         // Apply the saved theme before first paint to avoid a flash.
         try {
@@ -282,63 +281,16 @@ def conversation_to_html(data: dict, provider: str = "") -> str:
 <body>
     <div class="topbar">
         <div class="topbar-left">
-            <span class="topbar-title">""" + name + """</span>
+            <span class="topbar-title">""" + title + """</span>
             <span class="topbar-source">""" + source + """</span>
         </div>
         <button class="theme-toggle" onclick="(function(){var d=document.documentElement;var t=d.dataset.theme==='light'?'dark':'light';d.dataset.theme=t;try{localStorage.setItem('conversation-theme',t)}catch(e){}})()">&#9680; theme</button>
     </div>
     <div class="container">
-        <div class="metadata">
-            <div><strong>UUID:</strong> <code>""" + uuid + """</code></div>
-            <div><strong>Created:</strong> """ + created + """</div>
-            <div><strong>Updated:</strong> """ + updated + """</div>""")
-
-    if summary:
-        html_parts.append("""
-            <div><strong>Summary:</strong> """ + summary + """</div>""")
-
-    html_parts.append("""
+        <div class="metadata">""" + metadata_html + """
         </div>
 
-        <div class="messages">""")
-
-    # Process each message
-    for msg in data.get("chat_messages", []):
-        sender = msg.get("sender", "unknown")
-        timestamp = time_tag(msg.get("created_at", ""), "timestamp")
-        role = "user" if sender == "human" else "assistant"
-
-        html_parts.append(f"""
-            <div class="message-row {role}">
-                <div class="gutter">{timestamp}</div>
-                <div class="message">
-                    <div class="message-content">""")
-
-        # Message content. Collect the message text plus any distinct text
-        # content blocks, then render the whole thing as Markdown so it reads
-        # nicely in the browser (headers, lists, code blocks, links, etc.).
-        text = msg.get("text", "")
-        segments = [text] if text else []
-        for content_block in msg.get("content", []):
-            if content_block.get("type") == "text":
-                block_text = content_block.get("text", "")
-                if block_text and block_text != text:
-                    segments.append(block_text)
-        html_parts.append(render_markdown("\n\n".join(segments)))
-
-        html_parts.append("""</div>""")
-
-        # Note attachments if present
-        summary = attachment_summary(msg)
-        if summary:
-            html_parts.append(f"""
-                    <div class="attachments">📎 {html.escape(summary)}</div>""")
-
-        html_parts.append("""
-                </div>
-            </div>""")
-
-    html_parts.append("""
+        <div class="messages">""" + messages_html + """
         </div>
     </div>
     <script>
@@ -359,9 +311,73 @@ def conversation_to_html(data: dict, provider: str = "") -> str:
         })();
     </script>
 </body>
-</html>""")
+</html>"""
 
-    return "\n".join(html_parts)
+
+def _message_row(role: str, timestamp_iso: str, body_html: str,
+                 extra_html: str = "") -> str:
+    """One conversation message as a `message-row` block.
+
+    `body_html` is the rendered message content; `extra_html`, if given, is
+    appended after the content (used for the attachments / tool-use line).
+    """
+    timestamp = time_tag(timestamp_iso, "timestamp")
+    return f"""
+            <div class="message-row {role}">
+                <div class="gutter">{timestamp}</div>
+                <div class="message">
+                    <div class="message-content">{body_html}</div>{extra_html}
+                </div>
+            </div>"""
+
+
+def conversation_to_html(data: dict, provider: str = "") -> str:
+    """Convert conversation JSON to HTML format with styling."""
+    name = html.escape(data.get("name", "(untitled)"))
+    source = html.escape(_SOURCE_LABELS.get(provider, provider))
+    uuid = html.escape(data.get("uuid", "unknown"))
+    created = time_tag(data.get("created_at", ""), "localtime")
+    updated = time_tag(data.get("updated_at", ""), "localtime")
+    summary = html.escape(data.get("summary", "")) if data.get("summary") else ""
+
+    metadata_parts = [
+        f"""
+            <div><strong>UUID:</strong> <code>{uuid}</code></div>
+            <div><strong>Created:</strong> {created}</div>
+            <div><strong>Updated:</strong> {updated}</div>""",
+    ]
+    if summary:
+        metadata_parts.append(f"""
+            <div><strong>Summary:</strong> {summary}</div>""")
+
+    messages_parts = []
+    for msg in data.get("chat_messages", []):
+        sender = msg.get("sender", "unknown")
+        role = "user" if sender == "human" else "assistant"
+
+        # Collect the message text plus any distinct text content blocks, then
+        # render the whole thing as Markdown so it reads nicely in the browser
+        # (headers, lists, code blocks, links, etc.).
+        text = msg.get("text", "")
+        segments = [text] if text else []
+        for content_block in msg.get("content", []):
+            if content_block.get("type") == "text":
+                block_text = content_block.get("text", "")
+                if block_text and block_text != text:
+                    segments.append(block_text)
+
+        attachment = attachment_summary(msg)
+        extra = ""
+        if attachment:
+            extra = f"""
+                    <div class="attachments">📎 {html.escape(attachment)}</div>"""
+
+        messages_parts.append(_message_row(
+            role, msg.get("created_at", ""),
+            render_markdown("\n\n".join(segments)), extra))
+
+    return _html_page(name, source, "".join(metadata_parts),
+                       "".join(messages_parts))
 
 
 def claude_code_to_markdown(filepath: Path) -> str:
@@ -407,6 +423,50 @@ def claude_code_to_markdown(filepath: Path) -> str:
     return "\n".join(parts)
 
 
+def claude_code_to_html(filepath: Path) -> str:
+    """Convert a Claude Code JSONL session to HTML format with styling."""
+    import claude_code_parser as ccp
+
+    lines = ccp.parse_jsonl(filepath)
+    metadata = ccp.extract_session_metadata(lines)
+    turns = ccp.extract_conversation_turns(lines)
+
+    name = html.escape(metadata["name"])
+    source = html.escape(_SOURCE_LABELS["claude-code"])
+    session = html.escape(metadata["session_id"])
+    cwd = html.escape(metadata["cwd"])
+    created = time_tag(metadata["created_at"], "localtime")
+    updated = time_tag(metadata["updated_at"], "localtime")
+    resume_cmd = (f"cd {shlex.quote(metadata['cwd'])} "
+                  f"&& claude -r {metadata['session_id']}")
+
+    metadata_parts = [f"""
+            <div><strong>Session:</strong> <code>{session}</code></div>
+            <div><strong>Directory:</strong> <code>{cwd}</code></div>"""]
+    if metadata["git_branch"]:
+        branch = html.escape(metadata["git_branch"])
+        metadata_parts.append(f"""
+            <div><strong>Branch:</strong> <code>{branch}</code></div>""")
+    metadata_parts.append(f"""
+            <div><strong>Created:</strong> {created}</div>
+            <div><strong>Updated:</strong> {updated}</div>
+            <div><strong>Resume:</strong> <code>{html.escape(resume_cmd)}</code></div>""")
+
+    messages_parts = []
+    for turn in turns:
+        extra = ""
+        if turn["role"] == "assistant" and turn["tool_uses"]:
+            tools = html.escape(", ".join(turn["tool_uses"]))
+            extra = f"""
+                    <div class="attachments">🔧 Tools used: {tools}</div>"""
+        messages_parts.append(_message_row(
+            turn["role"], turn["timestamp"],
+            render_markdown(turn["content"]), extra))
+
+    return _html_page(name, source, "".join(metadata_parts),
+                       "".join(messages_parts))
+
+
 def markdown_body(content: str) -> str:
     """Markdown after the header — everything past the first '\n---\n' separator.
 
@@ -439,6 +499,8 @@ def classify_refresh(existing: str, fresh: str) -> str:
 def render_conversation(provider: str, conv_file: Path, fmt: str) -> str:
     """Render a conversation file to markdown or HTML."""
     if provider == "claude-code":
+        if fmt == "html":
+            return claude_code_to_html(conv_file)
         return claude_code_to_markdown(conv_file)
     with open(conv_file, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -549,10 +611,15 @@ Examples:
     write_file = True
     if output_path.exists():
         if args.format != "markdown":
-            # HTML keeps its reuse-if-exists behavior.
-            print(f"HTML file already exists: {output_path}")
-            print("Opening existing file (skipping regeneration)...")
-            write_file = False
+            # HTML pages aren't hand-edited, so a plain equality check is
+            # enough: rewrite when the conversation has changed, otherwise
+            # reuse the cached page.
+            existing = output_path.read_text(encoding="utf-8")
+            if existing == content:
+                print("HTML is up to date — opening existing file.")
+                write_file = False
+            else:
+                print("Conversation has changed — refreshed the HTML.")
         else:
             existing = output_path.read_text(encoding="utf-8")
             status = classify_refresh(existing, content)
