@@ -418,14 +418,30 @@ class ClaudeProvider(Provider):
         """Find Claude export zip files (data-*.zip pattern)."""
         return list(search_dir.glob("data-*.zip"))
 
+    def _read_projects(self, zf: zipfile.ZipFile) -> List[Dict]:
+        """Read projects from a Claude export.
+
+        Older exports ship a single ``projects.json`` list. Newer exports ship
+        one ``projects/<uuid>.json`` file per project. Support both.
+        """
+        names = set(zf.namelist())
+        if "projects.json" in names:
+            return json.loads(zf.read("projects.json"))
+
+        project_files = sorted(
+            n for n in names
+            if n.startswith("projects/") and n.endswith(".json")
+        )
+        return [json.loads(zf.read(n)) for n in project_files]
+
     def extract_export_data(self, zip_path: Path) -> Dict:
-        """Extract users.json, conversations.json, and projects.json from Claude export."""
+        """Extract users, conversations, and projects from a Claude export."""
         with zipfile.ZipFile(zip_path, "r") as zf:
             try:
                 return {
                     "users": json.loads(zf.read("users.json")),
                     "conversations": json.loads(zf.read("conversations.json")),
-                    "projects": json.loads(zf.read("projects.json"))
+                    "projects": self._read_projects(zf)
                 }
             except KeyError as e:
                 print(f"ERROR: Missing expected file in zip: {e}")
