@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-from paths import LLM_DATA_SUBDIR
+from paths import load_env_file, resolve_data_dir
 
 # Color codes for output
 GREEN = "\033[92m"
@@ -222,7 +222,8 @@ def test_format_validators() -> Tuple[bool, List[str]]:
 def main():
     """Main entry point."""
     script_dir = Path(__file__).parent
-    data_dir = script_dir / LLM_DATA_SUBDIR
+    config = load_env_file(script_dir / ".env")
+    data_dir = resolve_data_dir(script_dir, config)
 
     print("\n=== Data Structure Validation ===\n")
 

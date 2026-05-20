@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from paths import LLM_DATA_SUBDIR, LOCAL_VIEWS_SUBDIR, parse_claude_code_sources
+from paths import resolve_data_dir, resolve_local_views_dir, parse_claude_code_sources
 
 CLAUDE_CHAT_URL_PREFIX = "https://claude.ai/chat/"
 
@@ -565,9 +565,8 @@ Examples:
                     key, value = line.split('=', 1)
                     config[key.strip()] = value.strip()
 
-    # Use configured directories or defaults
-    data_dir = Path(config.get("DATA_DIR", script_dir / LLM_DATA_SUBDIR)).expanduser()
-    local_views_dir = Path(config.get("LOCAL_VIEWS_DIR", script_dir / LOCAL_VIEWS_SUBDIR)).expanduser()
+    data_dir = resolve_data_dir(script_dir, config)
+    local_views_dir = resolve_local_views_dir(script_dir, config)
 
     # Create local_views directory if it doesn't exist
     local_views_dir.mkdir(parents=True, exist_ok=True)

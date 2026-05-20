@@ -21,10 +21,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from paths import (
-    LLM_DATA_SUBDIR,
-    LOCAL_VIEWS_SUBDIR,
     CLAUDE_CODE_SOURCES_ENV_KEY,
     parse_claude_code_sources,
+    resolve_data_dir,
+    resolve_local_views_dir,
     resolve_host_name,
 )
 
@@ -601,8 +601,7 @@ def open_in_editor(results: List[SearchResult], count: int, config: dict):
         print(f"Error: Could not import view_conversation: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Get local_views directory from config
-    local_views_dir = Path(config.get("LOCAL_VIEWS_DIR", script_dir / LOCAL_VIEWS_SUBDIR)).expanduser()
+    local_views_dir = resolve_local_views_dir(script_dir, config)
     local_views_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate markdown files for each result
@@ -738,8 +737,7 @@ Examples:
                     key, value = line.split('=', 1)
                     config[key.strip()] = value.strip()
 
-    # Use configured DATA_DIR or default
-    data_dir = Path(config.get("DATA_DIR", script_dir / LLM_DATA_SUBDIR)).expanduser()
+    data_dir = resolve_data_dir(script_dir, config)
 
     # Perform search across requested sources
     results: List[SearchResult] = []

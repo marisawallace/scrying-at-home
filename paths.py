@@ -13,6 +13,11 @@ Any of these can be overridden via .env:
   DATA_DIR=/absolute/path/to/llm_data
   ARCHIVED_EXPORTS_DIR=/absolute/path/to/archived_exports
   LOCAL_VIEWS_DIR=/absolute/path/to/local_views
+
+This module is the single source of truth for resolving path-related
+environment variables. Entry points should call `resolve_data_dir`,
+`resolve_archived_exports_dir`, and `resolve_local_views_dir` rather
+than reading these keys from `config` directly.
 """
 from __future__ import annotations
 
@@ -74,6 +79,32 @@ def load_env_file(path: Path) -> dict:
             value = value[1:-1]
         config[key] = value
     return config
+
+
+def _resolve_dir(
+    config: dict, env_key: str, script_dir: Path, default_subdir: Path
+) -> Path:
+    """Resolve a path-valued env var from `config`, falling back to a default
+    relative to `script_dir`."""
+    raw = config.get(env_key, "").strip() if config.get(env_key) else ""
+    if raw:
+        return Path(raw).expanduser()
+    return script_dir / default_subdir
+
+
+def resolve_data_dir(script_dir: Path, config: dict) -> Path:
+    """Return the llm_data directory, honoring DATA_DIR from .env."""
+    return _resolve_dir(config, "DATA_DIR", script_dir, LLM_DATA_SUBDIR)
+
+
+def resolve_archived_exports_dir(script_dir: Path, config: dict) -> Path:
+    """Return the archived_exports directory, honoring ARCHIVED_EXPORTS_DIR from .env."""
+    return _resolve_dir(config, "ARCHIVED_EXPORTS_DIR", script_dir, ARCHIVED_EXPORTS_SUBDIR)
+
+
+def resolve_local_views_dir(script_dir: Path, config: dict) -> Path:
+    """Return the local_views directory, honoring LOCAL_VIEWS_DIR from .env."""
+    return _resolve_dir(config, "LOCAL_VIEWS_DIR", script_dir, LOCAL_VIEWS_SUBDIR)
 
 
 def parse_sources_string(raw: str) -> list[tuple[str, str]]:

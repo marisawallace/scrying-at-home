@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set, Optional, Tuple
 
-from paths import LLM_DATA_SUBDIR, ARCHIVED_EXPORTS_SUBDIR
+from paths import resolve_data_dir, resolve_archived_exports_dir
 
 
 # ============================================================================
@@ -264,16 +264,8 @@ class Provider(ABC):
     def __init__(self, script_dir: Path, config: Dict[str, str]):
         self.script_dir = script_dir
         self.config = config
-        # Allow DATA_DIR to be configured via .env (useful for testing and custom setups)
-        if "DATA_DIR" in config:
-            self.data_dir = Path(config["DATA_DIR"]).expanduser()
-        else:
-            self.data_dir = script_dir / LLM_DATA_SUBDIR
-        # Allow ARCHIVED_EXPORTS_DIR to be configured via .env
-        if "ARCHIVED_EXPORTS_DIR" in config:
-            self.archived_exports_base_dir = Path(config["ARCHIVED_EXPORTS_DIR"]).expanduser()
-        else:
-            self.archived_exports_base_dir = script_dir / ARCHIVED_EXPORTS_SUBDIR
+        self.data_dir = resolve_data_dir(script_dir, config)
+        self.archived_exports_base_dir = resolve_archived_exports_dir(script_dir, config)
 
     @abstractmethod
     def get_provider_name(self) -> str:
