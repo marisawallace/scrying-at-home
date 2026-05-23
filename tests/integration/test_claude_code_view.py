@@ -27,7 +27,7 @@ def claude_code_workspace(isolated_workspace, repo_root):
 
     env_content = (
         f"CLAUDE_CODE_SOURCES=testhost={cc_dir}\n"
-        f"DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
+        f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
     )
     repo_env.write_text(env_content)

@@ -281,7 +281,7 @@ def test_env_file(repo_root, request):
     # Create test .env in repo root with paths pointing to workspace
     env_content = f"""# Test configuration
 ZIP_SEARCH_DIR={workspace}
-DATA_DIR={workspace / "data" / "llm_data"}
+LLM_DATA_DIR={workspace / "data" / "llm_data"}
 ARCHIVED_EXPORTS_DIR={workspace / "data" / "archived_exports"}
 LOCAL_VIEWS_DIR={workspace / "data" / "local_views"}
 """

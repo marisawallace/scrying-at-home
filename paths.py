@@ -10,9 +10,12 @@ synced as a single unit (e.g. with MEGA, Syncthing, or similar).
     local_views/        - generated Markdown/HTML conversation views
 
 Any of these can be overridden via .env:
-  DATA_DIR=/absolute/path/to/llm_data
+  LLM_DATA_DIR=/absolute/path/to/llm_data
   ARCHIVED_EXPORTS_DIR=/absolute/path/to/archived_exports
   LOCAL_VIEWS_DIR=/absolute/path/to/local_views
+
+DATA_DIR is the deprecated former name of LLM_DATA_DIR; it is still honored
+(with a deprecation warning) so existing .env files keep working.
 
 This module is the single source of truth for resolving path-related
 environment variables. Entry points should call `resolve_data_dir`,
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import re
 import socket
+import sys
 from pathlib import Path
 
 # Single sync root - everything lives under here
@@ -93,8 +97,19 @@ def _resolve_dir(
 
 
 def resolve_data_dir(script_dir: Path, config: dict) -> Path:
-    """Return the llm_data directory, honoring DATA_DIR from .env."""
-    return _resolve_dir(config, "DATA_DIR", script_dir, LLM_DATA_SUBDIR)
+    """Return the llm_data directory, honoring LLM_DATA_DIR from .env.
+
+    DATA_DIR is the deprecated former name. If LLM_DATA_DIR is unset but
+    DATA_DIR is set, we honor DATA_DIR and emit a one-line deprecation
+    warning to stderr. If both are set, LLM_DATA_DIR wins.
+    """
+    if not (config.get("LLM_DATA_DIR") or "").strip() and (config.get("DATA_DIR") or "").strip():
+        print(
+            "Warning: DATA_DIR in .env is deprecated; rename it to LLM_DATA_DIR.",
+            file=sys.stderr,
+        )
+        return _resolve_dir(config, "DATA_DIR", script_dir, LLM_DATA_SUBDIR)
+    return _resolve_dir(config, "LLM_DATA_DIR", script_dir, LLM_DATA_SUBDIR)
 
 
 def resolve_archived_exports_dir(script_dir: Path, config: dict) -> Path:

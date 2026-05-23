@@ -30,7 +30,7 @@ def claude_code_workspace(isolated_workspace, repo_root):
 
     env_content = (
         f"CLAUDE_CODE_SOURCES=testhost={cc_dir}\n"
-        f"DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
+        f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
     )
     repo_env.write_text(env_content)
@@ -136,7 +136,7 @@ def test_search_no_claude_code_dir_configured(isolated_workspace, repo_root):
     if repo_env.exists():
         shutil.copy(repo_env, backup_env)
 
-    repo_env.write_text(f"DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n")
+    repo_env.write_text(f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n")
 
     try:
         result = subprocess.run(
@@ -182,7 +182,7 @@ def multi_host_claude_code_workspace(isolated_workspace, repo_root):
 
     env_content = (
         f"CLAUDE_CODE_SOURCES=laptop={laptop_dir},desktop={desktop_dir}\n"
-        f"DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
+        f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
     )
     repo_env.write_text(env_content)
