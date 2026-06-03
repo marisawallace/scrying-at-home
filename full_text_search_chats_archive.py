@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from paths import (
+    CLAUDE_CODE_HOST_ENV_KEY,
     CLAUDE_CODE_SOURCES_ENV_KEY,
     parse_claude_code_sources,
     resolve_data_dir,
@@ -476,6 +477,60 @@ def search_claude_code_archive(sources: List[Tuple[str, Path]], query: str, appl
     return results
 
 
+def filter_to_here(results: List[SearchResult], cwd: Path, host: str) -> List[SearchResult]:
+    """Keep only claude-code results on `host` whose session cwd is `cwd` or a subdir of it.
+
+    Filtering on the recorded session cwd (rather than reconstructing the Claude Code
+    project slug from a directory name) is robust to slug-encoding details. Note:
+    extract_session_metadata() records a single cwd per session (its first user line),
+    so a session that cd's into `cwd` mid-run will not match.
+    """
+    cwd = Path(cwd).resolve()
+
+    def under(p: str) -> bool:
+        try:
+            return Path(p).resolve().is_relative_to(cwd)
+        except (ValueError, OSError):
+            return False
+
+    return [
+        r for r in results
+        if r.provider == "claude-code"
+        and r.extra.get("host") == host
+        and under(r.extra.get("cwd", ""))
+    ]
+
+
+def here_miss_hint(
+    pre_filter: List[SearchResult], cwd: Path, host: str, host_is_explicit: bool
+) -> str:
+    """Build a dim, multi-line diagnostic explaining why --here matched nothing.
+
+    Prints both sides of the host equality test plus the current directory so the
+    user can eyeball a mismatch. `pre_filter` is the claude-code result set before
+    --here was applied (non-empty); call only when the post-filter set is empty.
+
+    Two failure modes are distinguished:
+      - host mismatch: this machine's host name isn't among the result hosts at all
+        (common when CLAUDE_CODE_HOST is unset and the hostname doesn't match the
+        label in CLAUDE_CODE_SOURCES).
+      - directory miss: the host matches but no session was recorded under `cwd`.
+    """
+    hosts_present = sorted({(r.extra or {}).get("host", "") for r in pre_filter})
+    host_source = CLAUDE_CODE_HOST_ENV_KEY if host_is_explicit else "system hostname"
+    host_match = host in hosts_present
+
+    lines = [
+        f"--here matched none of the {len(pre_filter)} Claude Code result(s) for this query.",
+        f"  this host ({host_source}): {host!r}"
+        + ("" if host_match else "   ← not among the result hosts below"),
+        f"  hosts in results:  {', '.join(repr(h) for h in hosts_present)}",
+        f"  current directory: {str(cwd)!r}"
+        + ("   ← no session was recorded here" if host_match else ""),
+    ]
+    return "\n".join(f"{Colors.DIM}{line}{Colors.RESET}" for line in lines)
+
+
 def highlight_query(text: str, query: str, exact: bool = False) -> str:
     """Highlight query matches in text with color."""
     terms = [query] if exact else query.split()
@@ -668,6 +723,7 @@ Examples:
   %(prog)s "deployment" -t
   %(prog)s "deployment" -R
   %(prog)s "archive" -s claude-code        # search only Claude Code sessions
+  %(prog)s "bugfix" --here                  # Claude Code sessions from this dir on this host
         """
     )
 
@@ -721,7 +777,20 @@ Examples:
         help="Filter by source: all (default), llm (claude.ai/chatgpt), claude-code"
     )
 
+    parser.add_argument(
+        "--here",
+        action="store_true",
+        help="Only Claude Code sessions run from the current directory (and subdirs) on this host"
+    )
+
     args = parser.parse_args()
+
+    # --here implies the claude-code source and is incompatible with an explicit non-cc source.
+    if args.here:
+        if args.source == "llm":
+            print("Error: --here cannot be combined with -s llm", file=sys.stderr)
+            sys.exit(1)
+        args.source = "claude-code"
 
     # Get data directory
     script_dir = Path(__file__).parent.resolve()
@@ -749,7 +818,15 @@ Examples:
     if args.source in ("all", "claude-code"):
         cc_sources = parse_claude_code_sources(config)
         if cc_sources:
-            results.extend(search_claude_code_archive(cc_sources, args.query, apply_recency_boost=recency, exact=args.exact))
+            cc_results = search_claude_code_archive(cc_sources, args.query, apply_recency_boost=recency, exact=args.exact)
+            if args.here:
+                here_host = resolve_host_name(config)
+                pre_filter = cc_results
+                cc_results = filter_to_here(pre_filter, Path.cwd(), here_host)
+                if pre_filter and not cc_results:
+                    host_is_explicit = bool(config.get(CLAUDE_CODE_HOST_ENV_KEY, "").strip())
+                    print(here_miss_hint(pre_filter, Path.cwd(), here_host, host_is_explicit), file=sys.stderr)
+            results.extend(cc_results)
         elif args.source == "claude-code":
             print(f"Error: {CLAUDE_CODE_SOURCES_ENV_KEY} not configured in .env", file=sys.stderr)
             sys.exit(1)
