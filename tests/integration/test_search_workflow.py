@@ -305,6 +305,46 @@ def test_search_exact_flag(isolated_workspace, sample_claude_export, repo_root, 
 
 
 @pytest.mark.integration
+def test_search_no_query_browses_all_newest_first(isolated_workspace, sample_claude_export,
+                                                  repo_root, test_env_file):
+    """With no query, every item is returned ordered by updated_at descending."""
+    zip_dest = isolated_workspace / "data-2025-01-05.zip"
+    shutil.copy(sample_claude_export, zip_dest)
+
+    sync_result = subprocess.run(
+        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
+        cwd=isolated_workspace,
+        capture_output=True,
+        text=True
+    )
+    assert sync_result.returncode == 0
+
+    # No positional query — browse mode.
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "-j"],
+        cwd=isolated_workspace,
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 0, f"Browse failed: {result.stderr}"
+
+    search_results = json.loads(result.stdout)
+
+    # All three items in the fixture (2 conversations + 1 project) appear.
+    names = {r["name"] for r in search_results}
+    assert {"Test Conversation 1", "Integration Testing Discussion", "Test Project"} <= names
+
+    # Ordered most-recent-first by updated_at.
+    updated = [r["updated_at"] for r in search_results]
+    assert updated == sorted(updated, reverse=True), "Browse results should be newest-first"
+
+    # Each item carries exactly one preview match scored 0.
+    for r in search_results:
+        assert r["match_count"] == 1
+        assert r["matches"][0]["score"] == 0.0
+
+
+@pytest.mark.integration
 def test_search_scoring_accuracy(isolated_workspace, sample_claude_export, repo_root, test_env_file):
     """Test that search scoring ranks results correctly."""
     # Setup: Import conversations

@@ -195,6 +195,68 @@ def multi_host_claude_code_workspace(isolated_workspace, repo_root):
         repo_env.unlink(missing_ok=True)
 
 
+def _write_cc_session(path: Path, session_id: str, cwd: str, timestamp: str, text: str):
+    """Write a minimal two-line Claude Code JSONL session."""
+    lines = [
+        {"type": "permission-mode", "permissionMode": "default", "sessionId": session_id},
+        {
+            "parentUuid": None, "type": "user",
+            "message": {"role": "user", "content": text},
+            "uuid": f"{session_id}-msg", "timestamp": timestamp,
+            "cwd": cwd, "sessionId": session_id, "gitBranch": "main",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+
+@pytest.mark.integration
+def test_search_here_no_query_newest_first(isolated_workspace, repo_root, tmp_path):
+    """--here with no query lists this dir's sessions, newest first."""
+    cc_dir = isolated_workspace / "claude_code_data"
+    # Run from a real directory so session cwd == current cwd passes the filter.
+    run_dir = tmp_path / "workdir"
+    run_dir.mkdir()
+    project_dir = cc_dir / "-tmp-workdir"
+    project_dir.mkdir(parents=True)
+
+    _write_cc_session(project_dir / "old.jsonl", "cc-old", str(run_dir),
+                      "2026-01-01T10:00:00.000Z", "older session about widgets")
+    _write_cc_session(project_dir / "new.jsonl", "cc-new", str(run_dir),
+                      "2026-05-01T10:00:00.000Z", "newer session about gadgets")
+
+    repo_env = repo_root / ".env"
+    backup_env = repo_root / ".env.backup"
+    if repo_env.exists():
+        shutil.copy(repo_env, backup_env)
+    repo_env.write_text(
+        f"CLAUDE_CODE_SOURCES=testhost={cc_dir}\n"
+        f"CLAUDE_CODE_HOST=testhost\n"
+        f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
+    )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
+             "--here", "-j"],
+            cwd=run_dir,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        if backup_env.exists():
+            shutil.move(backup_env, repo_env)
+        else:
+            repo_env.unlink(missing_ok=True)
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+
+    uuids = [entry["uuid"] for entry in data]
+    assert uuids == ["cc-new", "cc-old"], "Browse mode should list newest first"
+    assert all(entry["match_count"] == 1 for entry in data)
+    assert all(entry["matches"][0]["score"] == 0.0 for entry in data)
+
+
 @pytest.mark.integration
 def test_search_claude_code_multi_source(multi_host_claude_code_workspace, repo_root):
     """Both host sources surface in results, each tagged with its hostname."""

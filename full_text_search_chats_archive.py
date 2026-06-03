@@ -247,6 +247,18 @@ def find_matches_in_texts(texts: List[str], query: str, exact: bool = False) -> 
     matches: List[Match] = []
     query_lower = query.lower()
 
+    # Browse mode: with no query, every item "matches". Return a single preview
+    # snippet from the first non-empty text rather than walking the full text.
+    if not query.strip():
+        for text in texts:
+            if not text:
+                continue
+            preview = text.replace("\n", " ").strip()
+            if len(preview) > 200:
+                preview = preview[:200] + "..."
+            return [Match(text=preview, score=0.0)]
+        return []
+
     for text in texts:
         if not text:
             continue
@@ -325,7 +337,7 @@ def search_item(filepath: Path, query: str, item_type: str, email: str, provider
         name_matches = query_lower in name_lower
     else:
         name_matches = all(w in name_lower for w in query_lower.split())
-    if name and name_matches:
+    if query.strip() and name and name_matches:
         total_score += 5
 
     # Determine updated_at from last message (conversations) or top-level field
@@ -446,7 +458,7 @@ def search_claude_code_archive(sources: List[Tuple[str, Path]], query: str, appl
                     name_hit = query_lower in name_lower
                 else:
                     name_hit = all(w in name_lower for w in query_lower.split())
-                if name_hit:
+                if query.strip() and name_hit:
                     total_score += 5
 
                 result = SearchResult(
@@ -716,6 +728,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  %(prog)s                                 # browse all results, newest first
   %(prog)s "machine learning"              # find convos containing both words
   %(prog)s -e "machine learning"           # find exact phrase "machine learning"
   %(prog)s "python code" -j > results.json
@@ -724,12 +737,15 @@ Examples:
   %(prog)s "deployment" -R
   %(prog)s "archive" -s claude-code        # search only Claude Code sessions
   %(prog)s "bugfix" --here                  # Claude Code sessions from this dir on this host
+  %(prog)s --here                           # this dir's Claude Code sessions, newest first
         """
     )
 
     parser.add_argument(
         "query",
-        help="Search query (case-insensitive)"
+        nargs="?",
+        default=None,
+        help="Search query (case-insensitive). Omit to browse all results, newest first."
     )
 
     parser.add_argument(
@@ -785,6 +801,11 @@ Examples:
 
     args = parser.parse_args()
 
+    # An absent or blank query switches to browse mode: match everything and
+    # order strictly by recency.
+    query = (args.query or "").strip()
+    no_query = not query
+
     # --here implies the claude-code source and is incompatible with an explicit non-cc source.
     if args.here:
         if args.source == "llm":
@@ -815,12 +836,12 @@ Examples:
     current_host = resolve_host_name(config)
 
     if args.source in ("all", "llm"):
-        results.extend(search_archive(data_dir, args.query, apply_recency_boost=recency, exact=args.exact))
+        results.extend(search_archive(data_dir, query, apply_recency_boost=recency, exact=args.exact))
 
     if args.source in ("all", "claude-code"):
         cc_sources = parse_claude_code_sources(config)
         if cc_sources:
-            cc_results = search_claude_code_archive(cc_sources, args.query, apply_recency_boost=recency, exact=args.exact)
+            cc_results = search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=args.exact)
             if args.here:
                 pre_filter = cc_results
                 cc_results = filter_to_here(pre_filter, Path.cwd(), current_host)
@@ -835,8 +856,11 @@ Examples:
     # Re-sort combined results by score
     results.sort(key=lambda r: -r.total_score)
 
-    # Re-sort by updated date then score if requested (most recent at bottom)
-    if args.time_sort:
+    # Re-sort by updated date then score if requested (most recent at bottom).
+    # Browse mode (no query) always orders by recency; scores are all ~0 there.
+    if no_query:
+        results.sort(key=lambda r: r.updated_at, reverse=True)
+    elif args.time_sort:
         results.sort(key=lambda r: (r.updated_at, r.total_score), reverse=True)
 
     import demo_mode
@@ -861,12 +885,16 @@ Examples:
             print(f"{Colors.RED}No results found.{Colors.RESET}")
         else:
             import interactive_picker
-            # Best result first so the cursor starts on the strongest match.
-            picker_results = sorted(results, key=lambda r: -r.total_score)
+            # Browse mode: newest first. Otherwise best result first so the
+            # cursor starts on the strongest match.
+            if no_query:
+                picker_results = sorted(results, key=lambda r: r.updated_at, reverse=True)
+            else:
+                picker_results = sorted(results, key=lambda r: -r.total_score)
             demo = bool(config.get("DEMO_HOSTNAMES", "").strip())
-            sys.exit(interactive_picker.pick_and_act(picker_results, args.query, args.exact, current_host, demo))
+            sys.exit(interactive_picker.pick_and_act(picker_results, query, args.exact, current_host, demo))
     else:
-        print_results(results, args.query, exact=args.exact, current_host=current_host)
+        print_results(results, query, exact=args.exact, current_host=current_host)
 
     # Open in editor if requested
     if args.open:
