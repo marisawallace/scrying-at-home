@@ -4,6 +4,7 @@ __pycache__/
 .claude/*
 data/*
 claude_code_anomalies.log
+markdown-export/
 
 # Virtual environments
 venv/

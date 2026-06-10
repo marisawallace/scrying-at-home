@@ -15,6 +15,7 @@ Terminal UI, hit enter to directly resume a chat. Will open your browser or `cd`
 - **Smart search ranking**
 - **Analytics**: `cs --stats` for a breakdown of your whole archive — provider/host split, monthly timeline, hour-of-day and weekday activity, busiest day, top Claude Code directories, and a Claude Code tool-usage leaderboard
 - **Local view**: copy chats to Markdown or HTML, open in `$EDITOR`
+- **Bulk export**: `export_archive.py` dumps your whole archive to a dated tree of Markdown files with an index — drop it into Obsidian, grep it, keep it forever
 - **Non-destructive**: preserves a chat even if you deleted it on the website. Export/sync the last 30 days only and it'll preserve your older chats. 
 - **Export backup**: automatic archive of your data export zipfiles
 - **UUID tracking**: Correctly handles conversation renames
@@ -132,6 +133,12 @@ cs --stats
 
 # Stats for just one source
 cs --stats -s claude-code
+
+# Bulk-export the whole archive to dated Markdown (+ index.md) for Obsidian etc.
+python export_archive.py ~/Obsidian/llm-archive
+
+# Preview what would be exported, writing nothing
+python export_archive.py -s claude-code --dry-run
 ```
 
 
