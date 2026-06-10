@@ -23,6 +23,7 @@ from typing import List, Optional, Tuple
 from paths import (
     CLAUDE_CODE_HOST_ENV_KEY,
     CLAUDE_CODE_SOURCES_ENV_KEY,
+    load_env_file,
     parse_claude_code_sources,
     resolve_data_dir,
     resolve_local_views_dir,
@@ -849,16 +850,9 @@ Examples:
     # Get data directory
     script_dir = Path(__file__).parent.resolve()
 
-    # Load configuration from .env
-    config = {}
-    env_file = script_dir / ".env"
-    if env_file.exists():
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    config[key.strip()] = value.strip()
+    # Load configuration from .env (shared parser also handles inline comments
+    # and quoted values, unlike the previous inline split).
+    config = load_env_file(script_dir / ".env")
 
     data_dir = resolve_data_dir(script_dir, config)
 
