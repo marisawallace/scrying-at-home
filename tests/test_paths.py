@@ -33,3 +33,20 @@ def test_llm_data_dir_wins_over_legacy_alias(capsys):
     result = paths.resolve_data_dir(SCRIPT_DIR, config)
     assert result == Path("/new/llm_data")
     assert capsys.readouterr().err == ""  # no warning when new key is set
+
+
+def test_search_index_db_is_honored():
+    config = {"SEARCH_INDEX_DB": "/custom/index.db"}
+    assert paths.resolve_search_index_path(config) == Path("/custom/index.db")
+
+
+def test_search_index_defaults_to_xdg_cache(monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", "/xdg-cache")
+    result = paths.resolve_search_index_path({})
+    assert result == Path("/xdg-cache/clauding-at-home/index.db")
+
+
+def test_search_index_defaults_to_home_cache_without_xdg(monkeypatch):
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    result = paths.resolve_search_index_path({})
+    assert result == Path.home() / ".cache" / "clauding-at-home" / "index.db"

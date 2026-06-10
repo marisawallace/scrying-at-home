@@ -28,6 +28,7 @@ from paths import (
     resolve_data_dir,
     resolve_local_views_dir,
     resolve_host_name,
+    resolve_search_index_path,
 )
 
 
@@ -314,13 +315,7 @@ def search_item(filepath: Path, query: str, item_type: str, email: str, provider
         return None
 
     # Extract text based on type and provider
-    if item_type == "conversation":
-        if provider == "chatgpt":
-            texts = extract_text_from_chatgpt_conversation(data)
-        else:
-            texts = extract_text_from_conversation(data)
-    else:  # project
-        texts = extract_text_from_project(data)
+    texts = extract_llm_texts(data, item_type, provider)
 
     matches = find_matches_in_texts(texts, query, exact=exact)
 
@@ -364,9 +359,23 @@ def search_item(filepath: Path, query: str, item_type: str, email: str, provider
     )
 
 
-def search_archive(data_dir: Path, query: str, apply_recency_boost: bool = True, exact: bool = False) -> List[SearchResult]:
+def extract_llm_texts(data: dict, item_type: str, provider: str) -> List[str]:
+    """Dispatch to the provider-specific extractor. Shared with search_index,
+    which receives it as a callable so it never has to import this module."""
+    if item_type == "conversation":
+        if provider == "chatgpt":
+            return extract_text_from_chatgpt_conversation(data)
+        return extract_text_from_conversation(data)
+    return extract_text_from_project(data)
+
+
+def search_archive(data_dir: Path, query: str, apply_recency_boost: bool = True, exact: bool = False, candidates: Optional[set] = None) -> List[SearchResult]:
     """
     Search all conversations and projects in the archive.
+
+    `candidates` (paths as str) narrows the walk to files the search index
+    pre-matched; it is always a superset of the true matches, so skipping
+    the rest cannot drop results. None means no index: scan everything.
     """
     results: List[SearchResult] = []
 
@@ -391,6 +400,8 @@ def search_archive(data_dir: Path, query: str, apply_recency_boost: bool = True,
             conversations_dir = user_dir / "conversations"
             if conversations_dir.exists():
                 for conv_file in conversations_dir.glob("*.json"):
+                    if candidates is not None and str(conv_file) not in candidates:
+                        continue
                     result = search_item(conv_file, query, "conversation", email, provider, exact=exact)
                     if result:
                         results.append(result)
@@ -399,6 +410,8 @@ def search_archive(data_dir: Path, query: str, apply_recency_boost: bool = True,
             projects_dir = user_dir / "projects"
             if projects_dir.exists():
                 for proj_file in projects_dir.glob("*.json"):
+                    if candidates is not None and str(proj_file) not in candidates:
+                        continue
                     result = search_item(proj_file, query, "project", email, provider, exact=exact)
                     if result:
                         results.append(result)
@@ -415,10 +428,13 @@ def search_archive(data_dir: Path, query: str, apply_recency_boost: bool = True,
     return results
 
 
-def search_claude_code_archive(sources: List[Tuple[str, Path]], query: str, apply_recency_boost: bool = True, exact: bool = False) -> List[SearchResult]:
+def search_claude_code_archive(sources: List[Tuple[str, Path]], query: str, apply_recency_boost: bool = True, exact: bool = False, candidates: Optional[set] = None) -> List[SearchResult]:
     """
     Search Claude Code JSONL conversation archives across one or more
     host-labeled source directories.
+
+    `candidates` narrows the walk to index-pre-matched files (see
+    search_archive); None scans everything.
     """
     import claude_code_parser as ccp
 
@@ -436,6 +452,8 @@ def search_claude_code_archive(sources: List[Tuple[str, Path]], query: str, appl
             project_slug = project_dir.name
 
             for jsonl_file in project_dir.glob("*.jsonl"):
+                if candidates is not None and str(jsonl_file) not in candidates:
+                    continue
                 try:
                     lines = ccp.parse_jsonl(jsonl_file)
                 except Exception as e:
@@ -487,6 +505,36 @@ def search_claude_code_archive(sources: List[Tuple[str, Path]], query: str, appl
             result.total_score += recency_boost(result.updated_at)
 
     results.sort(key=lambda r: -r.total_score)
+    return results
+
+
+def results_from_index_items(rows: List[dict], apply_recency_boost: bool = True) -> List[SearchResult]:
+    """Reconstruct browse-mode SearchResults from index metadata rows,
+    mirroring what search_item()/search_claude_code_archive() produce for an
+    empty query: one zero-score preview match, recency boost as the score."""
+    results: List[SearchResult] = []
+    for row in rows:
+        extra = None
+        if row["provider"] == "claude-code":
+            extra = {
+                "cwd": row["cwd"],
+                "git_branch": row["git_branch"],
+                "host": row["host"],
+            }
+        score = recency_boost(row["updated_at"]) if apply_recency_boost else 0.0
+        results.append(SearchResult(
+            type=row["item_type"],
+            uuid=row["uuid"],
+            name=row["name"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            email=row["email"],
+            provider=row["provider"],
+            filepath=Path(row["path"]),
+            matches=[Match(text=row["preview"], score=0.0)],
+            total_score=score,
+            extra=extra,
+        ))
     return results
 
 
@@ -828,6 +876,12 @@ Examples:
         help="Show analytics over the archive (counts, timeline, activity) instead of searching"
     )
 
+    parser.add_argument(
+        "--no-index",
+        action="store_true",
+        help="Bypass the search index and scan every archive file (slow; results are identical)"
+    )
+
     args = parser.parse_args()
 
     # --stats reports over the whole archive, so it ignores any query and
@@ -856,6 +910,33 @@ Examples:
 
     data_dir = resolve_data_dir(script_dir, config)
 
+    # Search index: brought up to date on every run (files can arrive via
+    # cloud sync with no local process running), then used to narrow query
+    # scans to candidate files and to serve browse metadata. Every index
+    # failure mode degrades to the full scan with identical results.
+    index_conn = None
+    if not args.no_index:
+        import search_index
+        index_conn = search_index.open_index(resolve_search_index_path(config))
+        if index_conn is not None:
+            ok = search_index.refresh(
+                index_conn, data_dir, parse_claude_code_sources(config), extract_llm_texts
+            )
+            if not ok:
+                try:
+                    index_conn.close()
+                except Exception:
+                    pass
+                index_conn = None
+
+    candidates_llm = candidates_cc = None
+    if index_conn is not None and query:
+        fts_q = search_index.build_fts_query(query, args.exact)
+        if fts_q is not None:
+            candidates_llm = search_index.candidate_paths(index_conn, fts_q, search_index.SOURCE_LLM)
+            candidates_cc = search_index.candidate_paths(index_conn, fts_q, search_index.SOURCE_CC)
+    index_browse = index_conn is not None and no_query
+
     # Perform search across requested sources
     results: List[SearchResult] = []
     recency = not args.no_recency
@@ -863,12 +944,20 @@ Examples:
     current_host = resolve_host_name(config)
 
     if args.source in ("all", "llm"):
-        results.extend(search_archive(data_dir, query, apply_recency_boost=recency, exact=args.exact))
+        rows = search_index.browse_items(index_conn, search_index.SOURCE_LLM) if index_browse else None
+        if rows is not None:
+            results.extend(results_from_index_items(rows, apply_recency_boost=recency))
+        else:
+            results.extend(search_archive(data_dir, query, apply_recency_boost=recency, exact=args.exact, candidates=candidates_llm))
 
     if args.source in ("all", "claude-code"):
         cc_sources = parse_claude_code_sources(config)
         if cc_sources:
-            cc_results = search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=args.exact)
+            rows = search_index.browse_items(index_conn, search_index.SOURCE_CC) if index_browse else None
+            if rows is not None:
+                cc_results = results_from_index_items(rows, apply_recency_boost=recency)
+            else:
+                cc_results = search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=args.exact, candidates=candidates_cc)
             if args.here:
                 pre_filter = cc_results
                 cc_results = filter_to_here(pre_filter, Path.cwd(), current_host)
@@ -899,7 +988,10 @@ Examples:
         import analytics
         tool_counts = None
         if args.source in ("all", "claude-code"):
-            tool_counts = gather_cc_tool_counts(parse_claude_code_sources(config))
+            if index_conn is not None:
+                tool_counts = search_index.tool_counts(index_conn)
+            if tool_counts is None:
+                tool_counts = gather_cc_tool_counts(parse_claude_code_sources(config))
         print(analytics.format_report(results, tool_counts=tool_counts))
         return
 

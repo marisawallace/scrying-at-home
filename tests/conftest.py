@@ -284,6 +284,7 @@ ZIP_SEARCH_DIR={workspace}
 LLM_DATA_DIR={workspace / "data" / "llm_data"}
 ARCHIVED_EXPORTS_DIR={workspace / "data" / "archived_exports"}
 LOCAL_VIEWS_DIR={workspace / "data" / "local_views"}
+SEARCH_INDEX_DB={workspace / "search_index.db"}
 """
     repo_env.write_text(env_content)
 

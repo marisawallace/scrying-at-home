@@ -30,6 +30,39 @@ def extract_uuid(value: str) -> str:
     return value
 
 
+def find_conversation_file_via_index(config: dict, uuid: str) -> Optional[tuple[Path, str]]:
+    """O(1) uuid lookup via the search index, or None to fall back to the
+    full-archive scan.
+
+    The index is opened read-only — viewing never builds or refreshes it —
+    so the hit is verified against the live file before being trusted.
+    """
+    import sqlite3
+
+    from paths import resolve_search_index_path
+    import search_index
+
+    db_path = resolve_search_index_path(config)
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        hit = search_index.lookup_uuid(conn, uuid)
+    finally:
+        conn.close()
+    if not hit:
+        return None
+    path, provider = hit
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            if json.load(f).get("uuid") == uuid:
+                return path, provider
+    except Exception:
+        pass
+    return None
+
+
 def find_conversation_file(data_dir: Path, uuid: str) -> Optional[tuple[Path, str]]:
     """
     Find the JSON file for a given conversation UUID.
@@ -571,9 +604,12 @@ Examples:
     # Create local_views directory if it doesn't exist
     local_views_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find conversation file — try LLM providers first, then Claude Code
+    # Find conversation file — index lookup first, then LLM provider scan,
+    # then Claude Code
     print(f"Searching for conversation {args.uuid}...")
-    result = find_conversation_file(data_dir, args.uuid)
+    result = find_conversation_file_via_index(config, args.uuid)
+    if not result:
+        result = find_conversation_file(data_dir, args.uuid)
 
     if not result:
         # Try Claude Code across each configured host source

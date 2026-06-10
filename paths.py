@@ -13,6 +13,12 @@ Any of these can be overridden via .env:
   LLM_DATA_DIR=/absolute/path/to/llm_data
   ARCHIVED_EXPORTS_DIR=/absolute/path/to/archived_exports
   LOCAL_VIEWS_DIR=/absolute/path/to/local_views
+  SEARCH_INDEX_DB=/absolute/path/to/index.db
+
+The search index is per-machine derived state (rebuildable from llm_data),
+so unlike the directories above it deliberately lives OUTSIDE data/ — cloud
+sync tools corrupt SQLite files. Default: $XDG_CACHE_HOME (or ~/.cache)
+/clauding-at-home/index.db.
 
 DATA_DIR is the deprecated former name of LLM_DATA_DIR; it is still honored
 (with a deprecation warning) so existing .env files keep working.
@@ -24,6 +30,7 @@ than reading these keys from `config` directly.
 """
 from __future__ import annotations
 
+import os
 import re
 import socket
 import sys
@@ -120,6 +127,22 @@ def resolve_archived_exports_dir(script_dir: Path, config: dict) -> Path:
 def resolve_local_views_dir(script_dir: Path, config: dict) -> Path:
     """Return the local_views directory, honoring LOCAL_VIEWS_DIR from .env."""
     return _resolve_dir(config, "LOCAL_VIEWS_DIR", script_dir, LOCAL_VIEWS_SUBDIR)
+
+
+# Optional override for the search index database file. The index is derived,
+# per-machine state, so its default lives in the XDG cache dir rather than the
+# cloud-synced data/ tree (SQLite databases corrupt under file-level sync).
+SEARCH_INDEX_ENV_KEY = "SEARCH_INDEX_DB"
+
+
+def resolve_search_index_path(config: dict) -> Path:
+    """Return the search index db path, honoring SEARCH_INDEX_DB from .env."""
+    raw = (config.get(SEARCH_INDEX_ENV_KEY) or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    cache_root = os.environ.get("XDG_CACHE_HOME", "").strip()
+    base = Path(cache_root).expanduser() if cache_root else Path.home() / ".cache"
+    return base / "clauding-at-home" / "index.db"
 
 
 def parse_sources_string(raw: str) -> list[tuple[str, str]]:

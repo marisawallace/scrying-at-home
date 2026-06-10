@@ -32,6 +32,7 @@ def claude_code_workspace(isolated_workspace, repo_root):
         f"CLAUDE_CODE_SOURCES=testhost={cc_dir}\n"
         f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
+        f"SEARCH_INDEX_DB={isolated_workspace / 'search_index.db'}\n"
     )
     repo_env.write_text(env_content)
 
@@ -184,6 +185,7 @@ def multi_host_claude_code_workspace(isolated_workspace, repo_root):
         f"CLAUDE_CODE_SOURCES=laptop={laptop_dir},desktop={desktop_dir}\n"
         f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
+        f"SEARCH_INDEX_DB={isolated_workspace / 'search_index.db'}\n"
     )
     repo_env.write_text(env_content)
 
