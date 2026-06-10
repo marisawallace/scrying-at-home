@@ -564,16 +564,26 @@ class ChatGPTProvider(Provider):
         """
         normalized = dict(conv)  # Make a copy
 
-        if not conv["id"]:
+        # `id` addresses the conversation, so it is required. validate() only
+        # checks the first conversation in an export, so a later malformed one
+        # can still reach here — guard with .get() to give a clear error rather
+        # than a raw KeyError.
+        if not conv.get("id"):
             print("ERROR: missing ID in ChatGPT conversation")
             sys.exit(1)
 
-        # Map new field names to internal names
+        # Map new field names to internal names. title is often null/empty for
+        # untitled chats; sanitize_name() turns a blank name into "untitled".
         normalized["uuid"] = conv["id"]
-        normalized["name"] = conv["title"]
+        normalized["name"] = conv.get("title") or ""
 
-        # Convert Unix timestamp to ISO format string
-        timestamp = conv["create_time"]
+        # Convert Unix timestamp to ISO format string. create_time can be null
+        # on some exports; fall back to update_time before giving up (avoids
+        # datetime.fromtimestamp(None) raising an opaque TypeError).
+        timestamp = conv.get("create_time") or conv.get("update_time")
+        if timestamp is None:
+            print(f"ERROR: ChatGPT conversation {conv['id']} has no usable timestamp")
+            sys.exit(1)
         dt = datetime.fromtimestamp(timestamp)
         normalized["created_at"] = dt.isoformat() + "Z"
 
