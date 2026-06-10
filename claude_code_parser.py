@@ -11,10 +11,25 @@ Shared by full_text_search_chats_archive.py and view_conversation.py.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
 from typing import Optional
+
+# Sessions started via a slash command begin with harness-generated user lines
+# (<local-command-caveat> boilerplate, then the <command-name> invocation)
+# rather than a typed prompt. These must not be mistaken for human prompts
+# when deriving a conversation name.
+_COMMAND_BOILERPLATE_PREFIXES = (
+    "<local-command-caveat>",
+    "<command-name>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+)
+
+_COMMAND_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
+_COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 
 
 def parse_jsonl(filepath: Path) -> list[dict]:
@@ -36,7 +51,11 @@ def parse_jsonl(filepath: Path) -> list[dict]:
 
 
 def _first_user_prompt(lines: list[dict]) -> Optional[dict]:
-    """Return the first user line that contains an actual human prompt."""
+    """Return the first user line with string content (used for created_at).
+
+    Includes slash-command boilerplate lines, which carry the session-start
+    timestamp; use _is_human_prompt to filter those out when naming.
+    """
     for line in lines:
         if line.get("type") == "user":
             content = line.get("message", {}).get("content")
@@ -216,24 +235,63 @@ def find_session_file(cc_data_dir: Path, session_id: str) -> Optional[Path]:
     return None
 
 
-def derive_conversation_name(lines: list[dict], max_length: int = 80) -> str:
-    """Get conversation name from first human prompt, truncated.
+def _is_human_prompt(line: dict) -> bool:
+    """True if a user line holds a prompt the human actually typed.
 
-    Falls back to '(untitled)' if no human prompt found.
+    Excludes harness-generated lines: isMeta lines and slash-command
+    boilerplate (caveat/command-name/command-output tags).
     """
-    first = _first_user_prompt(lines)
-    if not first:
-        return "(untitled)"
-
-    content = first.get("message", {}).get("content", "")
+    if line.get("type") != "user" or line.get("isMeta"):
+        return False
+    content = line.get("message", {}).get("content")
     if not isinstance(content, str) or not content.strip():
-        return "(untitled)"
+        return False
+    return not content.lstrip().startswith(_COMMAND_BOILERPLATE_PREFIXES)
 
-    # Take first line of the prompt, collapse whitespace
-    first_line = content.strip().split("\n")[0].strip()
-    # Collapse runs of whitespace
-    first_line = " ".join(first_line.split())
 
+def _slash_command_invocation(lines: list[dict]) -> str:
+    """Reconstruct the first slash-command invocation, e.g. '/loop 5m'.
+
+    Returns '' if the session contains no <command-name> line.
+    """
+    for line in lines:
+        if line.get("type") == "user":
+            content = line.get("message", {}).get("content")
+        elif line.get("type") == "system":
+            content = line.get("content")
+        else:
+            continue
+        if not isinstance(content, str):
+            continue
+        name_match = _COMMAND_NAME_RE.search(content)
+        if not name_match:
+            continue
+        name = name_match.group(1).strip()
+        args_match = _COMMAND_ARGS_RE.search(content)
+        args = args_match.group(1).strip() if args_match else ""
+        return f"{name} {args}".strip()
+    return ""
+
+
+def _truncate_name(text: str, max_length: int) -> str:
+    # Take first line, collapse runs of whitespace
+    first_line = " ".join(text.strip().split("\n")[0].split())
     if len(first_line) <= max_length:
         return first_line
     return first_line[:max_length - 1] + "\u2026"
+
+
+def derive_conversation_name(lines: list[dict], max_length: int = 80) -> str:
+    """Get conversation name from first human prompt, truncated.
+
+    Sessions started via a slash command and containing no typed prompt are
+    named after the command invocation. Falls back to '(untitled)'.
+    """
+    for line in lines:
+        if _is_human_prompt(line):
+            return _truncate_name(line["message"]["content"], max_length)
+
+    command = _slash_command_invocation(lines)
+    if command:
+        return _truncate_name(command, max_length)
+    return "(untitled)"
