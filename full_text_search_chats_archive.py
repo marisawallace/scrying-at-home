@@ -882,6 +882,12 @@ Examples:
         help="Bypass the search index and scan every archive file (slow; results are identical)"
     )
 
+    parser.add_argument(
+        "--reindex",
+        action="store_true",
+        help="Discard and rebuild the search index from scratch before searching (use if you suspect it is stale)"
+    )
+
     args = parser.parse_args()
 
     # --stats reports over the whole archive, so it ignores any query and
@@ -917,7 +923,10 @@ Examples:
     index_conn = None
     if not args.no_index:
         import search_index
-        index_conn = search_index.open_index(resolve_search_index_path(config))
+        index_path = resolve_search_index_path(config)
+        if args.reindex:
+            search_index.drop_index(index_path)
+        index_conn = search_index.open_index(index_path)
         if index_conn is not None:
             ok = search_index.refresh(
                 index_conn, data_dir, parse_claude_code_sources(config), extract_llm_texts

@@ -35,7 +35,7 @@ from typing import Callable, Optional
 
 import claude_code_parser as ccp
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 HEAD_HASH_BYTES = 1024
 RECONCILE_BATCH = 200
 
@@ -54,6 +54,10 @@ CREATE TABLE files (
     path          TEXT NOT NULL UNIQUE,
     source        TEXT NOT NULL,            -- 'llm' | 'claude-code'
     mtime_ns      INTEGER NOT NULL,
+    ctime_ns      INTEGER NOT NULL,         -- inode change time; catches
+                                            -- mtime-preserving copies (cp -p,
+                                            -- rsync --times) whose write still
+                                            -- stamps ctime
     size          INTEGER NOT NULL,
     indexed_bytes INTEGER NOT NULL,         -- jsonl: end of last complete line
     head_hash     TEXT NOT NULL,            -- sha1 of first head_len bytes
@@ -106,6 +110,7 @@ class FileStat:
     path: str
     source: str          # SOURCE_LLM | SOURCE_CC
     mtime_ns: int
+    ctime_ns: int
     size: int
     provider: str = ""   # llm: 'claude' | 'chatgpt'
     email: str = ""      # llm: account email; cc: project slug
@@ -120,6 +125,7 @@ class IndexedFile:
     path: str
     source: str
     mtime_ns: int
+    ctime_ns: int
     size: int
     indexed_bytes: int
     head_hash: str
@@ -270,7 +276,12 @@ def diff_index(disk: list[FileStat], indexed: list[IndexedFile]) -> ReconcilePla
         if ix is None:
             new.append(fs)
             continue
-        stat_changed = fs.mtime_ns != ix.mtime_ns or fs.size != ix.size
+        # ctime is the belt to mtime's suspenders: any content write moves
+        # both, but a copy/sync that restores the source mtime still leaves a
+        # fresh ctime, so OR-ing them closes the mtime-preserving-edit gap.
+        # mtime is kept for filesystems with unreliable ctime (NFS/SMB/FAT).
+        stat_changed = (fs.mtime_ns != ix.mtime_ns or fs.ctime_ns != ix.ctime_ns
+                        or fs.size != ix.size)
         if fs.source in (SOURCE_CC, SOURCE_CC_TOOLS):
             # Append-only transcripts: growth is (probably) an append; the
             # head-hash check in reconcile() demotes prefix changes to a
@@ -317,6 +328,12 @@ def parse_jsonl_texts(raw_lines: list[str], filepath: str) -> list[dict]:
 def _delete_db_files(db_path: Path) -> None:
     for suffix in ("", "-wal", "-shm"):
         Path(str(db_path) + suffix).unlink(missing_ok=True)
+
+
+def drop_index(db_path: Path) -> None:
+    """Delete the index so the next open_index() rebuilds it from scratch.
+    Backs --reindex; the index is derived state, so this is always safe."""
+    _delete_db_files(db_path)
 
 
 def open_index(db_path: Path) -> Optional[sqlite3.Connection]:
@@ -389,7 +406,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]]) -> list[FileSt
                         continue
                     stats.append(FileStat(
                         path=str(f), source=SOURCE_LLM,
-                        mtime_ns=st.st_mtime_ns, size=st.st_size,
+                        mtime_ns=st.st_mtime_ns, ctime_ns=st.st_ctime_ns, size=st.st_size,
                         provider=provider, email=email, item_type=item_type,
                     ))
 
@@ -408,7 +425,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]]) -> list[FileSt
                 searchable.add(f)
                 stats.append(FileStat(
                     path=str(f), source=SOURCE_CC,
-                    mtime_ns=st.st_mtime_ns, size=st.st_size,
+                    mtime_ns=st.st_mtime_ns, ctime_ns=st.st_ctime_ns, size=st.st_size,
                     email=project_dir.name, host=host,
                 ))
         # Deeper transcripts (subagents) feed the tool leaderboard only.
@@ -421,7 +438,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]]) -> list[FileSt
                 continue
             stats.append(FileStat(
                 path=str(f), source=SOURCE_CC_TOOLS,
-                mtime_ns=st.st_mtime_ns, size=st.st_size, host=host,
+                mtime_ns=st.st_mtime_ns, ctime_ns=st.st_ctime_ns, size=st.st_size, host=host,
             ))
 
     return stats
@@ -429,7 +446,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]]) -> list[FileSt
 
 def load_indexed_files(conn: sqlite3.Connection) -> list[IndexedFile]:
     rows = conn.execute(
-        "SELECT id, path, source, mtime_ns, size, indexed_bytes, head_hash, head_len FROM files"
+        "SELECT id, path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len FROM files"
     ).fetchall()
     return [IndexedFile(*row) for row in rows]
 
@@ -484,9 +501,9 @@ def _insert_fts_segment(conn: sqlite3.Connection, file_id: int, body: str) -> No
 def _insert_file_row(conn: sqlite3.Connection, fs: FileStat,
                      indexed_bytes: int, head: bytes) -> int:
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (fs.path, fs.source, fs.mtime_ns, fs.size, indexed_bytes,
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (fs.path, fs.source, fs.mtime_ns, fs.ctime_ns, fs.size, indexed_bytes,
          hashlib.sha1(head).hexdigest(), len(head)),
     )
     return cur.lastrowid
@@ -568,9 +585,9 @@ def _append_cc_file(conn: sqlite3.Connection, fs: FileStat, ix: IndexedFile) -> 
     # Re-hash the head over up to 1KB of the (possibly longer) file so the
     # append-vs-rewrite check strengthens as small files grow.
     conn.execute(
-        "UPDATE files SET mtime_ns = ?, size = ?, indexed_bytes = ?, head_hash = ?, head_len = ? "
+        "UPDATE files SET mtime_ns = ?, ctime_ns = ?, size = ?, indexed_bytes = ?, head_hash = ?, head_len = ? "
         "WHERE id = ?",
-        (fs.mtime_ns, fs.size, end_offset,
+        (fs.mtime_ns, fs.ctime_ns, fs.size, end_offset,
          hashlib.sha1(head).hexdigest(), len(head), ix.id),
     )
 

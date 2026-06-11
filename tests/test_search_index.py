@@ -72,14 +72,17 @@ def test_preview_absent_when_no_texts():
 # diff_index
 # ---------------------------------------------------------------------------
 
-def _fs(path, source=si.SOURCE_LLM, mtime_ns=1, size=100, **kw):
-    return si.FileStat(path=path, source=source, mtime_ns=mtime_ns, size=size, **kw)
+def _fs(path, source=si.SOURCE_LLM, mtime_ns=1, ctime_ns=None, size=100, **kw):
+    return si.FileStat(path=path, source=source, mtime_ns=mtime_ns,
+                       ctime_ns=mtime_ns if ctime_ns is None else ctime_ns,
+                       size=size, **kw)
 
 
-def _ix(path, source=si.SOURCE_LLM, mtime_ns=1, size=100, indexed_bytes=None,
+def _ix(path, source=si.SOURCE_LLM, mtime_ns=1, ctime_ns=None, size=100, indexed_bytes=None,
         file_id=1, head_hash="h", head_len=100):
     return si.IndexedFile(
-        id=file_id, path=path, source=source, mtime_ns=mtime_ns, size=size,
+        id=file_id, path=path, source=source, mtime_ns=mtime_ns,
+        ctime_ns=mtime_ns if ctime_ns is None else ctime_ns, size=size,
         indexed_bytes=size if indexed_bytes is None else indexed_bytes,
         head_hash=head_hash, head_len=head_len,
     )
@@ -100,6 +103,27 @@ def test_diff_changed_json_is_rewritten():
     plan = si.diff_index([_fs("/a.json", mtime_ns=2)], [_ix("/a.json", mtime_ns=1)])
     assert [f.path for f, _ in plan.rewritten] == ["/a.json"]
     assert not plan.maybe_appended
+
+
+def test_diff_ctime_only_change_is_rewritten():
+    # mtime and size byte-identical, but ctime moved: a copy/sync restored the
+    # source mtime while its write stamped a fresh ctime. Must reindex, not skip.
+    plan = si.diff_index(
+        [_fs("/a.json", mtime_ns=1, ctime_ns=2, size=100)],
+        [_ix("/a.json", mtime_ns=1, ctime_ns=1, size=100)],
+    )
+    assert [f.path for f, _ in plan.rewritten] == ["/a.json"]
+
+
+def test_diff_ctime_only_change_reindexes_jsonl():
+    # Same guarantee for append-only transcripts: an unchanged-size, restored-
+    # mtime rewrite with a fresh ctime is caught and reparsed, not skipped.
+    plan = si.diff_index(
+        [_fs("/s.jsonl", source=si.SOURCE_CC, mtime_ns=1, ctime_ns=2, size=100)],
+        [_ix("/s.jsonl", source=si.SOURCE_CC, mtime_ns=1, ctime_ns=1, size=100)],
+    )
+    assert ([f.path for f, _ in plan.maybe_appended] == ["/s.jsonl"]
+            or [f.path for f, _ in plan.rewritten] == ["/s.jsonl"])
 
 
 def test_diff_grown_jsonl_is_append_candidate():
@@ -287,8 +311,8 @@ def test_open_index_rebuilds_on_schema_version_bump(tmp_path):
 
 def _index_body(conn, path, body, source=si.SOURCE_LLM):
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES (?, ?, 1, 1, 1, '', 0)", (path, source))
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
+        "VALUES (?, ?, 1, 1, 1, 1, '', 0)", (path, source))
     si._insert_fts_segment(conn, cur.lastrowid, si.searchable_body([body]))
 
 
@@ -307,8 +331,8 @@ def test_candidates_are_superset_for_cross_text_and(tmp_path):
     # as a candidate (rescoring filters it out).
     conn = si.open_index(tmp_path / "index.db")
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES ('/a.json', 'llm', 1, 1, 1, '', 0)")
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
+        "VALUES ('/a.json', 'llm', 1, 1, 1, 1, '', 0)")
     si._insert_fts_segment(conn, cur.lastrowid,
                            si.searchable_body(["alpha text", "bravo text"]))
     q = si.build_fts_query("alpha bravo", exact=False)
@@ -329,8 +353,8 @@ def test_candidates_respect_source_filter(tmp_path):
 def test_lookup_uuid_roundtrip(tmp_path):
     conn = si.open_index(tmp_path / "index.db")
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES ('/a.json', 'llm', 1, 1, 1, '', 0)")
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
+        "VALUES ('/a.json', 'llm', 1, 1, 1, 1, '', 0)")
     si._insert_item_row(conn, cur.lastrowid, "claude", "me@example.com", {
         "uuid": "u-123", "item_type": "conversation", "name": "n",
         "created_at": "c", "updated_at": "u", "host": "", "cwd": "",

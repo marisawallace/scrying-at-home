@@ -13,9 +13,8 @@ Terminal UI, hit enter to directly resume a chat. Will open your browser or `cd`
 - **Made for cloud sync**: put `clauding-at-home/data/` in Dropbox/MEGA/etc. Search your full LLM history on all your machines.
 - **Multi-host** for Claude Code. `laptop` and `desktop` chats retain separate host paths. Sync & search everything on every device.
 - **Smart search ranking**
-- **Analytics**: `cs --stats` for a breakdown of your whole archive — provider/host split, monthly timeline, hour-of-day and weekday activity, busiest day, top Claude Code directories, and a Claude Code tool-usage leaderboard
 - **Local view**: copy chats to Markdown or HTML, open in `$EDITOR`
-- **Bulk export**: `export_archive.py` dumps your whole archive to a dated tree of Markdown files with an index — drop it into Obsidian, grep it, keep it forever
+- **Bulk export**: `export_archive.py` dumps your whole archive to a dated tree of Markdown files
 - **Non-destructive**: preserves a chat even if you deleted it on the website. Export/sync the last 30 days only and it'll preserve your older chats. 
 - **Export backup**: automatic archive of your data export zipfiles
 - **UUID tracking**: Correctly handles conversation renames
