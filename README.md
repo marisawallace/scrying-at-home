@@ -140,34 +140,7 @@ python export_archive.py ~/Obsidian/llm-archive
 python export_archive.py -s claude-code --dry-run
 ```
 
-## Search index
-
-Search is backed by a SQLite FTS5 index that is built automatically on first
-run (a few seconds for a multi-year archive) and kept up to date on every
-invocation, so searches finish in well under a second regardless of archive
-size. The index is a pure accelerator: it only narrows which files get
-scanned, and results are byte-identical to a full scan (`--no-index` runs the
-full scan if you want to verify or troubleshoot).
-
-The index is derived, per-machine state — it lives outside the synced `data/`
-tree (SQLite databases corrupt under file-level cloud sync) and rebuilds
-itself if deleted, corrupted, or outdated:
-
-```
-# default location; override with SEARCH_INDEX_DB in .env
-~/.cache/clauding-at-home/index.db
-```
-
-Files that arrive via cloud sync from other machines are picked up by the
-freshness check on the next search — no manual reindexing, ever. If SQLite
-lacks FTS5 trigram support (older than 3.34), searches transparently fall
-back to the full scan.
-
-
-
-
 ---
-
 
 
 ## Directory Structure
@@ -211,6 +184,19 @@ clauding-at-home/
 ├── claude_code_hook.py             # Claude Code Stop/SessionEnd hook
 └── full_text_search_chats_archive.py  # Search conversations
 ```
+
+## Search index
+
+Search runs on an SQLite FTS5 index that's built automatically on the first run (takes a few seconds) and eagerly, incrementally updated with each search. The index is a pure accelerator: it only narrows which files get scanned, and results are byte-identical to a full scan. Pass `--no-index` for debugging.
+
+The index rebuilds itself if deleted, corrupted, or outdated.
+
+Default location is `~/.cache/clauding-at-home/index.db`. Override with:
+
+```
+SEARCH_INDEX_DB=~/Documents/clauding-at-home-index.db
+```
+
 
 ## Known Limitations
 
