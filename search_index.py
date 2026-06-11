@@ -25,12 +25,14 @@ directly.
 """
 from __future__ import annotations
 
+import fcntl
 import functools
 import hashlib
 import json
 import sqlite3
 import sys
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -331,6 +333,24 @@ def parse_jsonl_texts(raw_lines: list[str], filepath: str) -> list[dict]:
 # Imperative shell
 # ---------------------------------------------------------------------------
 
+@contextmanager
+def _refresh_lock(db_path: Path):
+    """Exclusive advisory lock serializing index refreshes across processes.
+
+    Held on a separate <db_path>.lock file (never the db itself, so it does
+    not interfere with SQLite's own WAL locking). Blocks until acquired; a
+    competing full rebuild holds it ~10s worst case, normally a few ms.
+    """
+    lock_path = Path(str(db_path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def _delete_db_files(db_path: Path) -> None:
     for suffix in ("", "-wal", "-shm"):
         Path(str(db_path) + suffix).unlink(missing_ok=True)
@@ -622,13 +642,34 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
     Returns the (usually empty) list of file paths that could not be
     indexed, or None when the index itself could not be refreshed and the
     caller should fall back to scanning.
+
+    The whole scan-disk → diff → reconcile sequence runs under an exclusive
+    advisory lock on <db_path>.lock, serializing concurrent refreshes (the
+    user searches while sessions are being written; two terminals are
+    realistic). Without it, two processes can both plan an INSERT for the
+    same new file and the loser hits the files.path UNIQUE constraint. The
+    diff runs against the now-updated index after acquiring, so the loser's
+    refresh naturally becomes a no-op. Readers take no lock.
     """
     try:
-        disk = scan_disk(data_dir, cc_sources)
-        plan = diff_index(disk, load_indexed_files(conn))
-        if plan.is_noop():
-            return []
-        return reconcile(conn, plan, extract_llm_texts)
+        db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+    except sqlite3.Error as e:
+        print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
+        return None
+    try:
+        with _refresh_lock(db_path):
+            disk = scan_disk(data_dir, cc_sources)
+            plan = diff_index(disk, load_indexed_files(conn))
+            if plan.is_noop():
+                return []
+            return reconcile(conn, plan, extract_llm_texts)
+    except sqlite3.IntegrityError as e:
+        # A concurrent refresh raced us to a new files.path row (or a UNIQUE
+        # constraint otherwise tripped). This is contention, never
+        # corruption: warn and fall back to the full scan this run; the next
+        # run sees the already-indexed file and no-ops. Never delete the db.
+        print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
+        return None
     except sqlite3.DatabaseError as e:
         # Corruption: drop the db so the next run rebuilds it cleanly.
         # (OperationalError — e.g. locked — is a subclass; deleting on a

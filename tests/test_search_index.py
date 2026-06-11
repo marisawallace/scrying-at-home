@@ -344,3 +344,39 @@ def test_lookup_uuid_roundtrip(tmp_path):
     assert si.lookup_uuid(conn, "u-123") == (Path("/a.json"), "claude")
     assert si.lookup_uuid(conn, "missing") is None
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# refresh — concurrency hardening (Part B)
+# ---------------------------------------------------------------------------
+
+def test_refresh_integrity_error_does_not_delete_db(tmp_path, monkeypatch):
+    # A racing process already inserted the new file's path row; our INSERT
+    # trips the UNIQUE constraint. That is contention, never corruption: the
+    # db must survive and refresh must return None (caller falls back to scan).
+    db = tmp_path / "index.db"
+    conn = si.open_index(db)
+
+    cc_dir = tmp_path / "cc" / "-proj"
+    cc_dir.mkdir(parents=True)
+    session = cc_dir / "s.jsonl"
+    session.write_text(json.dumps({
+        "type": "user", "message": {"role": "user", "content": "hello"},
+        "uuid": "u1", "timestamp": "2026-01-01T00:00:00.000Z",
+        "sessionId": "s", "cwd": "/proj", "gitBranch": "main",
+    }) + "\n")
+
+    # Pre-insert a conflicting files.path row (as a racing process would).
+    conn.execute(
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes) "
+        "VALUES (?, 'claude-code', 999, 999, 999, 0)", (str(session),))
+    conn.commit()
+    # Force diff_index to plan a fresh INSERT for that same path despite the
+    # row already existing, guaranteeing the UNIQUE collision in reconcile.
+    monkeypatch.setattr(si, "load_indexed_files", lambda conn: [])
+
+    result = si.refresh(conn, tmp_path / "no-llm", [("testhost", tmp_path / "cc")],
+                        lambda data, item_type, provider: [])
+    assert result is None
+    assert db.exists()
+    conn.close()
