@@ -11,11 +11,12 @@ import full_text_search_chats_archive as fts
 
 
 def _result(provider="claude", name="Hello World", created_at="2026-01-02T09:00:00Z",
-            email="me@example.com", uuid="u1", extra=None):
+            email="me@example.com", uuid="u1", extra=None, type="conversation",
+            filepath=Path("/tmp/x")):
     return fts.SearchResult(
-        type="conversation", uuid=uuid, name=name, created_at=created_at,
+        type=type, uuid=uuid, name=name, created_at=created_at,
         updated_at=created_at, email=email, provider=provider,
-        filepath=Path("/tmp/x"), matches=[], total_score=0.0, extra=extra,
+        filepath=filepath, matches=[], total_score=0.0, extra=extra,
     )
 
 
@@ -27,15 +28,25 @@ def test_export_group_email_vs_host():
 
 def test_plan_path_layout_and_naming():
     [(r, rel)] = ex.plan_exports([_result()])
-    assert rel == Path("claude/me@example.com/2026-01-02_Hello-World.md")
+    assert rel == Path("claude/me@example.com/conversations/2026-01-02_Hello-World.md")
+
+
+def test_plan_splits_conversations_and_projects():
+    results = [
+        _result(uuid="c", type="conversation"),
+        _result(uuid="p", type="project"),
+    ]
+    dirs = {r.uuid: rel.parent.as_posix() for r, rel in ex.plan_exports(results)}
+    assert dirs["c"] == "claude/me@example.com/conversations"
+    assert dirs["p"] == "claude/me@example.com/projects"
 
 
 def test_plan_dedupes_collisions_stably():
     a = _result(uuid="a")
     b = _result(uuid="b")  # same provider/group/date/name -> collision
     paths = {r.uuid: rel for r, rel in ex.plan_exports([a, b])}
-    assert paths["a"] == Path("claude/me@example.com/2026-01-02_Hello-World.md")
-    assert paths["b"] == Path("claude/me@example.com/2026-01-02_Hello-World-2.md")
+    assert paths["a"] == Path("claude/me@example.com/conversations/2026-01-02_Hello-World.md")
+    assert paths["b"] == Path("claude/me@example.com/conversations/2026-01-02_Hello-World-2.md")
 
 
 def test_plan_respects_extension():
@@ -50,7 +61,11 @@ def test_plan_separates_providers_and_hosts():
         _result("claude-code", extra={"host": "desktop"}, uuid="3"),
     ]
     dirs = {rel.parent.as_posix() for _, rel in ex.plan_exports(results)}
-    assert dirs == {"claude/a@b.com", "claude-code/laptop", "claude-code/desktop"}
+    assert dirs == {
+        "claude/a@b.com/conversations",
+        "claude-code/laptop/conversations",
+        "claude-code/desktop/conversations",
+    }
 
 
 def test_build_index_groups_and_links():
@@ -60,8 +75,33 @@ def test_build_index_groups_and_links():
     ])
     index = ex.build_index(planned, today="2026-06-10")
     assert "# LLM Archive Export" in index
-    assert "2 conversation(s)" in index
+    assert "2 item(s)" in index
     assert "## claude.ai / me@example.com" in index
     assert "## claude-code / laptop" in index
     # links are relative posix paths
-    assert "(claude/me@example.com/2026-01-02_First.md)" in index
+    assert "(claude/me@example.com/conversations/2026-01-02_First.md)" in index
+
+
+def test_build_index_tags_projects():
+    planned = ex.plan_exports([_result(name="My Project", type="project")])
+    index = ex.build_index(planned, today="2026-06-10")
+    assert "[My Project](claude/me@example.com/projects/2026-01-02_My-Project.md) *(project)*" in index
+
+
+def test_run_export_indexes_only_written_files(tmp_path, monkeypatch):
+    good = _result(name="Good", uuid="g", filepath=Path("/tmp/good.json"))
+    bad = _result(name="Bad", uuid="b", filepath=Path("/tmp/bad.json"))
+
+    def fake_render(provider, filepath, fmt, item_type="conversation"):
+        if filepath.name == "bad.json":
+            raise ValueError("corrupt file")
+        return "# rendered"
+
+    monkeypatch.setattr(ex, "render_conversation", fake_render)
+    written = ex.run_export(tmp_path, [good, bad], "markdown", dry_run=False)
+
+    assert written == 1
+    assert (tmp_path / "claude/me@example.com/conversations/2026-01-02_Good.md").exists()
+    index = (tmp_path / "index.md").read_text()
+    assert "Good" in index
+    assert "Bad" not in index  # failed render must not leave a dead link

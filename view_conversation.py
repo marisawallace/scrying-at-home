@@ -202,6 +202,40 @@ def conversation_to_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
+def project_to_markdown(data: dict) -> str:
+    """Convert project JSON (description, prompt template, docs) to Markdown.
+
+    Projects have no chat_messages; their content is the prompt template and
+    the uploaded knowledge docs, each rendered as its own section.
+    """
+    lines = []
+
+    lines.append(f"# {data.get('name', '(untitled)')}\n")
+    lines.append(f"**UUID:** `{data.get('uuid', 'unknown')}`  ")
+    lines.append(f"**Created:** {format_timestamp(data.get('created_at', ''))}  ")
+    lines.append(f"**Updated:** {format_timestamp(data.get('updated_at', ''))}  ")
+
+    if data.get("description"):
+        lines.append(f"**Description:** {data['description']}  ")
+
+    lines.append("\n---\n")
+
+    if data.get("prompt_template"):
+        lines.append("\n## Prompt template\n")
+        lines.append(f"\n{data['prompt_template']}\n")
+        lines.append("\n---\n")
+
+    for doc in data.get("docs", []):
+        lines.append(f"\n## 📄 {doc.get('filename', '(unnamed doc)')}\n")
+        if doc.get("created_at"):
+            lines.append(f"*{format_timestamp(doc['created_at'])}*\n")
+        if doc.get("content"):
+            lines.append(f"\n{doc['content']}\n")
+        lines.append("\n---\n")
+
+    return "\n".join(lines)
+
+
 @functools.lru_cache(maxsize=1)
 def _markdown_renderer():
     """Build a mistune Markdown renderer with Pygments-highlighted code blocks.
@@ -413,6 +447,42 @@ def conversation_to_html(data: dict, provider: str = "") -> str:
                        "".join(messages_parts))
 
 
+def project_to_html(data: dict, provider: str = "") -> str:
+    """Convert project JSON to HTML format with styling.
+
+    Reuses the conversation page shell: description in the metadata panel,
+    then the prompt template and each knowledge doc as its own block.
+    """
+    name = html.escape(data.get("name", "(untitled)"))
+    source = html.escape(_SOURCE_LABELS.get(provider, provider))
+    uuid = html.escape(data.get("uuid", "unknown"))
+    created = time_tag(data.get("created_at", ""), "localtime")
+    updated = time_tag(data.get("updated_at", ""), "localtime")
+
+    metadata_parts = [
+        f"""
+            <div><strong>UUID:</strong> <code>{uuid}</code></div>
+            <div><strong>Created:</strong> {created}</div>
+            <div><strong>Updated:</strong> {updated}</div>""",
+    ]
+    if data.get("description"):
+        metadata_parts.append(f"""
+            <div><strong>Description:</strong> {html.escape(data['description'])}</div>""")
+
+    doc_parts = []
+    if data.get("prompt_template"):
+        doc_parts.append(_message_row(
+            "user", data.get("created_at", ""),
+            "<h2>Prompt template</h2>" + render_markdown(data["prompt_template"])))
+    for doc in data.get("docs", []):
+        filename = html.escape(doc.get("filename", "(unnamed doc)"))
+        doc_parts.append(_message_row(
+            "user", doc.get("created_at", ""),
+            f"<h2>📄 {filename}</h2>" + render_markdown(doc.get("content", ""))))
+
+    return _html_page(name, source, "".join(metadata_parts), "".join(doc_parts))
+
+
 def claude_code_to_markdown(filepath: Path) -> str:
     """Convert a Claude Code JSONL session to Markdown."""
     import claude_code_parser as ccp
@@ -529,14 +599,19 @@ def classify_refresh(existing: str, fresh: str) -> str:
     return "diverged"
 
 
-def render_conversation(provider: str, conv_file: Path, fmt: str) -> str:
-    """Render a conversation file to markdown or HTML."""
+def render_conversation(provider: str, conv_file: Path, fmt: str,
+                        item_type: str = "conversation") -> str:
+    """Render a conversation (or claude.ai project) file to markdown or HTML."""
     if provider == "claude-code":
         if fmt == "html":
             return claude_code_to_html(conv_file)
         return claude_code_to_markdown(conv_file)
     with open(conv_file, "r", encoding="utf-8") as f:
         data = json.load(f)
+    if item_type == "project":
+        if fmt == "markdown":
+            return project_to_markdown(data)
+        return project_to_html(data, provider)
     if fmt == "markdown":
         return conversation_to_markdown(data)
     return conversation_to_html(data, provider)
@@ -627,6 +702,10 @@ Examples:
     conv_file, provider = result
     print(f"Found: {conv_file}")
 
+    # Archive layout puts projects under <user>/projects/; everything else
+    # (conversations/, Claude Code JSONL) renders as a conversation.
+    item_type = "project" if conv_file.parent.name == "projects" else "conversation"
+
     # Determine output path
     output_path = get_output_path(local_views_dir, args.uuid, provider, args.format)
 
@@ -637,7 +716,7 @@ Examples:
 
     # Generate fresh content from the stored conversation.
     try:
-        content = render_conversation(provider, conv_file, args.format)
+        content = render_conversation(provider, conv_file, args.format, item_type)
     except Exception as e:
         print(f"Error converting conversation: {e}", file=sys.stderr)
         sys.exit(1)

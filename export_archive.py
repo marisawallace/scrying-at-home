@@ -10,9 +10,10 @@ with the same engine `view_conversation.py` uses for single conversations.
 Layout:
     OUTPUT/
       index.md                         # links to everything, grouped
-      claude/user@example.com/2026-01-02_Title.md
-      chatgpt/user@example.com/2026-01-02_Title.md
-      claude-code/<host>/2026-01-02_first-prompt.md
+      claude/user@example.com/conversations/2026-01-02_Title.md
+      claude/user@example.com/projects/2026-01-02_Title.md
+      chatgpt/user@example.com/conversations/2026-01-02_Title.md
+      claude-code/<host>/conversations/2026-01-02_first-prompt.md
 
 Usage:
     python export_archive.py [OUTPUT_DIR] [-s SOURCE] [--format md|html] [--dry-run]
@@ -63,8 +64,9 @@ def plan_exports(
     """Assign each result a unique relative output path (pure, deterministic).
 
     Files are named `<YYYY-MM-DD>_<sanitized-name>.<ext>` under
-    `<provider>/<group>/`. Collisions (same date + name in a group) get a
-    numeric suffix, resolved in a stable order so reruns are reproducible.
+    `<provider>/<group>/<conversations|projects>/`. Collisions (same date +
+    name in a directory) get a numeric suffix, resolved in a stable order so
+    reruns are reproducible.
     """
     ordered = sorted(
         results, key=lambda r: (r.provider, export_group(r), r.created_at, r.uuid)
@@ -72,7 +74,7 @@ def plan_exports(
     seen = set()
     planned: List[Tuple[SearchResult, Path]] = []
     for r in ordered:
-        rel_dir = Path(r.provider) / export_group(r)
+        rel_dir = Path(r.provider) / export_group(r) / f"{r.type}s"
         stem = build_filename(r.created_at, r.name)  # YYYY-MM-DD_sanitized
         candidate = rel_dir / f"{stem}.{extension}"
         i = 2
@@ -85,12 +87,14 @@ def plan_exports(
 
 
 def build_index(planned: Sequence[Tuple[SearchResult, Path]], today: str = "") -> str:
-    """Render index.md: every export linked, grouped by provider then account.
+    """Render index.md: every successfully written export linked, grouped by
+    provider then account. Callers must pass only entries that exist on disk,
+    or the index will contain dead links.
 
     Links are relative to the index at the export root, so the tree is portable.
     """
     today = today or date.today().isoformat()
-    lines = ["# LLM Archive Export", "", f"_{len(planned)} conversation(s) · generated {today}_", ""]
+    lines = ["# LLM Archive Export", "", f"_{len(planned)} item(s) · generated {today}_", ""]
 
     # Group by (provider, group) preserving the planned order, newest first within.
     groups: dict[Tuple[str, str], List[Tuple[SearchResult, Path]]] = {}
@@ -105,7 +109,8 @@ def build_index(planned: Sequence[Tuple[SearchResult, Path]], today: str = "") -
         for r, rel in entries:
             day = (r.created_at or "")[:10] or "????-??-??"
             name = r.name or "(untitled)"
-            lines.append(f"- {day} — [{name}]({rel.as_posix()})")
+            tag = " *(project)*" if r.type == "project" else ""
+            lines.append(f"- {day} — [{name}]({rel.as_posix()}){tag}")
         lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -116,7 +121,7 @@ def build_index(planned: Sequence[Tuple[SearchResult, Path]], today: str = "") -
 # ---------------------------------------------------------------------------
 
 def gather_results(config: dict, source: str) -> List[SearchResult]:
-    """Enumerate every conversation (empty query = browse) across the source(s)."""
+    """Enumerate every conversation and project (empty query = browse) across the source(s)."""
     results: List[SearchResult] = []
     if source in ("all", "llm"):
         data_dir = resolve_data_dir(Path(__file__).parent.resolve(), config)
@@ -134,7 +139,7 @@ def run_export(output_dir: Path, results: Sequence[SearchResult], fmt: str, dry_
     planned = plan_exports(results, extension=extension)
 
     if dry_run:
-        print(f"Would export {len(planned)} conversation(s) to {output_dir}/")
+        print(f"Would export {len(planned)} item(s) to {output_dir}/")
         by_provider: dict[str, int] = {}
         for r, _ in planned:
             by_provider[r.provider] = by_provider.get(r.provider, 0) + 1
@@ -142,27 +147,29 @@ def run_export(output_dir: Path, results: Sequence[SearchResult], fmt: str, dry_
             print(f"  {PROVIDER_LABELS.get(provider, provider):<14} {count}")
         return 0
 
-    written = 0
+    written: List[Tuple[SearchResult, Path]] = []
     failed = 0
     for r, rel in planned:
         out_path = output_dir / rel
         try:
-            content = render_conversation(r.provider, r.filepath, fmt)
+            content = render_conversation(r.provider, r.filepath, fmt, r.type)
         except Exception as e:  # one bad file shouldn't abort the whole export
             print(f"Warning: could not render {r.filepath}: {e}", file=sys.stderr)
             failed += 1
             continue
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(content, encoding="utf-8")
-        written += 1
+        written.append((r, rel))
 
-    (output_dir / "index.md").write_text(build_index(planned), encoding="utf-8")
+    # Index only what actually landed on disk, so failures never become
+    # dead links.
+    (output_dir / "index.md").write_text(build_index(written), encoding="utf-8")
 
-    print(f"Exported {written} conversation(s) to {output_dir}/")
+    print(f"Exported {len(written)} item(s) to {output_dir}/")
     if failed:
         print(f"  ({failed} could not be rendered — see warnings above)")
     print(f"Index: {output_dir / 'index.md'}")
-    return written
+    return len(written)
 
 
 def main():
