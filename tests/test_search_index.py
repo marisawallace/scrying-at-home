@@ -79,12 +79,12 @@ def _fs(path, source=si.SOURCE_LLM, mtime_ns=1, ctime_ns=None, size=100, **kw):
 
 
 def _ix(path, source=si.SOURCE_LLM, mtime_ns=1, ctime_ns=None, size=100, indexed_bytes=None,
-        file_id=1, head_hash="h", head_len=100):
+        file_id=1, head_hash="h", head_len=100, tail_hash="t"):
     return si.IndexedFile(
         id=file_id, path=path, source=source, mtime_ns=mtime_ns,
         ctime_ns=mtime_ns if ctime_ns is None else ctime_ns, size=size,
         indexed_bytes=size if indexed_bytes is None else indexed_bytes,
-        head_hash=head_hash, head_len=head_len,
+        head_hash=head_hash, head_len=head_len, tail_hash=tail_hash,
     )
 
 
@@ -273,6 +273,59 @@ def test_read_complete_lines_only_splits_on_newline(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# schema_identity — extractor source changes must invalidate the index
+# ---------------------------------------------------------------------------
+
+def test_schema_identity_is_deterministic_and_in_range():
+    v = si.schema_identity()
+    assert v == si.schema_identity()
+    assert 0 < v <= 0x7FFFFFFF  # fits PRAGMA user_version; never 0 (= fresh db)
+
+
+def test_schema_identity_changes_when_source_changes(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d in (a, b):
+        d.mkdir()
+        for name in si.SCHEMA_SOURCE_FILES:
+            (d / name).write_text("def extract(): return ['original']\n")
+    (b / "claude_code_parser.py").write_text("def extract(): return ['changed']\n")
+    assert si.schema_identity(a) != si.schema_identity(b)
+
+
+def test_open_index_rebuilds_when_identity_differs(tmp_path):
+    # Simulates an index built by older extractor source: its stored
+    # user_version no longer matches schema_identity(), forcing a rebuild.
+    db = tmp_path / "index.db"
+    conn = si.open_index(db)
+    conn.execute("INSERT INTO fts(body) VALUES ('stale')")
+    stale = si.schema_identity() ^ 1
+    conn.execute(f"PRAGMA user_version = {stale}")
+    conn.commit()
+    conn.close()
+    conn = si.open_index(db)
+    assert conn.execute("SELECT count(*) FROM fts").fetchone()[0] == 0
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# tail hash — append-vs-rewrite detection for the indexed region
+# ---------------------------------------------------------------------------
+
+def test_tail_hash_file_matches_bytes(tmp_path):
+    region = b"x" * 3000
+    f = tmp_path / "s.jsonl"
+    f.write_bytes(region + b"unindexed torn tail")
+    assert si._tail_hash(str(f), len(region)) == si._tail_hash_bytes(region)
+
+
+def test_tail_hash_of_short_region(tmp_path):
+    f = tmp_path / "s.jsonl"
+    f.write_bytes(b"short\n")
+    assert si._tail_hash(str(f), 6) == si._tail_hash_bytes(b"short\n")
+    assert si._tail_hash(str(f), 0) == si._tail_hash_bytes(b"")
+
+
+# ---------------------------------------------------------------------------
 # open_index / candidate_paths superset behavior (real sqlite, tmp db)
 # ---------------------------------------------------------------------------
 
@@ -280,7 +333,7 @@ def test_open_index_bootstraps_and_reopens(tmp_path):
     db = tmp_path / "idx" / "index.db"
     conn = si.open_index(db)
     assert conn is not None
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == si.SCHEMA_VERSION
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == si.schema_identity()
     conn.close()
     conn = si.open_index(db)  # reopen existing
     assert conn is not None
@@ -311,8 +364,8 @@ def test_open_index_rebuilds_on_schema_version_bump(tmp_path):
 
 def _index_body(conn, path, body, source=si.SOURCE_LLM):
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES (?, ?, 1, 1, 1, 1, '', 0)", (path, source))
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len, tail_hash) "
+        "VALUES (?, ?, 1, 1, 1, 1, '', 0, '')", (path, source))
     si._insert_fts_segment(conn, cur.lastrowid, si.searchable_body([body]))
 
 
@@ -331,8 +384,8 @@ def test_candidates_are_superset_for_cross_text_and(tmp_path):
     # as a candidate (rescoring filters it out).
     conn = si.open_index(tmp_path / "index.db")
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES ('/a.json', 'llm', 1, 1, 1, 1, '', 0)")
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len, tail_hash) "
+        "VALUES ('/a.json', 'llm', 1, 1, 1, 1, '', 0, '')")
     si._insert_fts_segment(conn, cur.lastrowid,
                            si.searchable_body(["alpha text", "bravo text"]))
     q = si.build_fts_query("alpha bravo", exact=False)
@@ -353,8 +406,8 @@ def test_candidates_respect_source_filter(tmp_path):
 def test_lookup_uuid_roundtrip(tmp_path):
     conn = si.open_index(tmp_path / "index.db")
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES ('/a.json', 'llm', 1, 1, 1, 1, '', 0)")
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len, tail_hash) "
+        "VALUES ('/a.json', 'llm', 1, 1, 1, 1, '', 0, '')")
     si._insert_item_row(conn, cur.lastrowid, "claude", "me@example.com", {
         "uuid": "u-123", "item_type": "conversation", "name": "n",
         "created_at": "c", "updated_at": "u", "host": "", "cwd": "",

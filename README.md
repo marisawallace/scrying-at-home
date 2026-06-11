@@ -126,18 +126,15 @@ cs books -j > results.json
 # Browse everything, newest first (no query)
 cs
 
-# Analytics over your whole archive: provider/host breakdown, activity
-# timeline, hour-of-day and weekday patterns, top Claude Code directories
+# For fun, analytics over your archive!
 cs --stats
-
-# Stats for just one source
 cs --stats -s claude-code
 
-# Bulk-export the whole archive to dated Markdown (+ index.md) for Obsidian etc.
-python export_archive.py ~/Obsidian/llm-archive
+# Bulk-export the whole archive
+python3 export_archive.py ~/Obsidian/llm-archive
 
 # Preview what would be exported, writing nothing
-python export_archive.py -s claude-code --dry-run
+python3 export_archive.py -s claude-code --dry-run
 ```
 
 ---
@@ -189,7 +186,9 @@ clauding-at-home/
 
 Search runs on an SQLite FTS5 index that's built automatically on the first run (takes a few seconds) and eagerly, incrementally updated with each search. The index is a pure accelerator: it only narrows which files get scanned, and results are byte-identical to a full scan. Pass `--no-index` for debugging.
 
-The index rebuilds itself if deleted, corrupted, or outdated.
+The index rebuilds itself if deleted, corrupted, or outdated — including automatically whenever the extraction code changes, so it can never serve results from stale indexing logic.
+
+A corrupt archive file (which should never happen) is skipped with a warning on every search until you fix or remove it; searches keep working without it.
 
 Default location is `~/.cache/clauding-at-home/index.db`. Override with:
 

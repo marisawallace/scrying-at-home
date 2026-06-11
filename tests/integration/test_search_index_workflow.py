@@ -250,9 +250,86 @@ def test_rewritten_jsonl_head_change_forces_full_reindex(full_archive_workspace,
     assert "cc-test-session-001" not in out
 
 
+@pytest.mark.integration
+def test_rewritten_jsonl_middle_change_forces_full_reindex(full_archive_workspace, repo_root):
+    ws = full_archive_workspace
+    session = ws / "claude_code_data/-home-testuser-projects-my-app/cc-test-session-001.jsonl"
+
+    # Start from a transcript whose first line alone exceeds the 1KB head
+    # window, so a later middle rewrite leaves the head hash unchanged.
+    def line(uuid, content, extra=""):
+        return json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": content + extra},
+            "uuid": uuid, "timestamp": "2026-04-10T12:00:00.000Z",
+            "cwd": "/home/testuser/projects/my-app",
+            "sessionId": "cc-test-session-001", "gitBranch": "main",
+        }) + "\n"
+
+    head_line = line("msg-head", "padding head line", "x" * 2000)
+    session.write_text(head_line + line("msg-mid", "original middle topic"))
+    _search(repo_root, ws, "virtual environment", "-j")  # build index
+
+    # Rewrite: head line byte-identical, middle replaced, file grows — only
+    # the tail hash can tell this from an append.
+    session.write_text(head_line + line("msg-mid", "replacement nebula topic", "y" * 100))
+
+    out = _assert_index_matches_scan(repo_root, ws, "nebula", "-s", "claude-code", "-j")
+    assert "cc-test-session-001" in out
+    out = _assert_index_matches_scan(repo_root, ws, "original middle", "-s", "claude-code", "-j")
+    assert "cc-test-session-001" not in out
+
+
 # ---------------------------------------------------------------------------
 # Failure handling
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_corrupt_archive_file_warns_on_every_run_and_self_heals(full_archive_workspace, repo_root):
+    ws = full_archive_workspace
+    _search(repo_root, ws, "Python function", "-j")  # build index
+
+    conv_dir = ws / "data/llm_data/claude/claude-test@example.com/conversations"
+    conv_file = next(conv_dir.glob("*Test-Conversation-1*"))
+    original = conv_file.read_text()
+    conv_file.write_text(original[: len(original) // 2])  # torn mid-write
+
+    # Loud on every run, never tombstoned, and search still succeeds
+    for _ in range(2):
+        result = _run_cli(repo_root, ws, "full_text_search_chats_archive.py", "xyzzy", "-j")
+        assert result.returncode == 0
+        assert str(conv_file) in result.stderr
+        assert "could not be read and are missing from results" in result.stderr
+
+    # Results stay identical to a scan while the file is corrupt
+    out = _assert_index_matches_scan(repo_root, ws, "Python function", "-j")
+    assert "conv-uuid-001" not in out
+
+    # Restoring the file heals the index with no manual intervention
+    conv_file.write_text(original)
+    result = _run_cli(repo_root, ws, "full_text_search_chats_archive.py", "Python function", "-j")
+    assert result.returncode == 0
+    assert "missing from results" not in result.stderr
+    assert "conv-uuid-001" in result.stdout
+
+
+@pytest.mark.integration
+def test_wrong_shape_json_warns_instead_of_crashing(full_archive_workspace, repo_root):
+    # Valid JSON missing required keys (uuid/created_at): both the indexed
+    # and scan paths must warn and skip, not crash.
+    ws = full_archive_workspace
+    conv_dir = ws / "data/llm_data/claude/claude-test@example.com/conversations"
+    conv_file = next(conv_dir.glob("*Test-Conversation-1*"))
+    data = json.loads(conv_file.read_text())
+    del data["uuid"]
+    conv_file.write_text(json.dumps(data))
+
+    for extra in ([], ["--no-index"]):
+        result = _run_cli(repo_root, ws, "full_text_search_chats_archive.py",
+                          "Python function", "-j", *extra)
+        assert result.returncode == 0, result.stderr
+        assert "conv-uuid-001" not in result.stdout
 
 @pytest.mark.integration
 def test_corrupt_index_recovers_with_correct_results(full_archive_workspace, repo_root):

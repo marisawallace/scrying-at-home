@@ -14,8 +14,9 @@ Correctness invariants:
     case_sensitive, because SQLite's own case folding differs from
     str.lower() on edge cases and could drop matches.
   - The index is derived, per-machine state: it self-bootstraps, rebuilds
-    itself when corrupt or stale-schemed, and every entry point falls back
-    to the full scan when the index is unavailable.
+    itself when corrupt, stale-schemed, or built by different extractor
+    source (see schema_identity), and every entry point falls back to the
+    full scan when the index is unavailable.
 
 This module must not import full_text_search_chats_archive (it runs as
 __main__ and would be loaded twice); the llm text extractors are passed in
@@ -24,6 +25,7 @@ directly.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import sqlite3
@@ -35,9 +37,43 @@ from typing import Callable, Optional
 
 import claude_code_parser as ccp
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 HEAD_HASH_BYTES = 1024
+TAIL_HASH_BYTES = 1024
 RECONCILE_BATCH = 200
+
+# Modules whose source determines what ends up in the index: the extractors,
+# the metadata derivation, and this module itself. Their bytes are hashed
+# into the schema identity (see schema_identity) so that ANY change to
+# extraction logic automatically invalidates the index — without this, an
+# extractor edit would leave stale FTS bodies that silently drop matches.
+SCHEMA_SOURCE_FILES = (
+    "search_index.py",
+    "claude_code_parser.py",
+    "full_text_search_chats_archive.py",
+)
+
+
+@functools.lru_cache(maxsize=None)
+def schema_identity(src_dir: Optional[Path] = None) -> int:
+    """The PRAGMA user_version this index must carry: SCHEMA_VERSION mixed
+    with a hash of the source files listed in SCHEMA_SOURCE_FILES.
+
+    Deliberately blunt — a comment-only edit to any of those modules
+    triggers a full rebuild — because a rebuild costs seconds while a
+    missed extractor change silently breaks the FTS-superset invariant.
+    """
+    h = hashlib.sha1(str(SCHEMA_VERSION).encode())
+    base = Path(__file__).resolve().parent if src_dir is None else src_dir
+    for name in SCHEMA_SOURCE_FILES:
+        h.update(name.encode())
+        try:
+            h.update((base / name).read_bytes())
+        except OSError:
+            pass  # missing module file: SCHEMA_VERSION alone still applies
+    # Positive 31-bit int (user_version is a signed 32-bit field); never 0,
+    # which is indistinguishable from a fresh empty database.
+    return (int.from_bytes(h.digest()[:4], "big") & 0x7FFFFFFF) or 1
 
 # files.source values
 SOURCE_LLM = "llm"
@@ -61,7 +97,10 @@ CREATE TABLE files (
     size          INTEGER NOT NULL,
     indexed_bytes INTEGER NOT NULL,         -- jsonl: end of last complete line
     head_hash     TEXT NOT NULL,            -- sha1 of first head_len bytes
-    head_len      INTEGER NOT NULL          -- distinguishes append vs rewrite
+    head_len      INTEGER NOT NULL,         -- distinguishes append vs rewrite
+    tail_hash     TEXT NOT NULL             -- sha1 of last TAIL_HASH_BYTES of
+                                            -- the indexed region; catches mid-
+                                            -- file rewrites the head hash misses
 );
 
 CREATE TABLE items (
@@ -130,6 +169,7 @@ class IndexedFile:
     indexed_bytes: int
     head_hash: str
     head_len: int
+    tail_hash: str
 
 
 @dataclass(frozen=True)
@@ -353,15 +393,16 @@ def open_index(db_path: Path) -> Optional[sqlite3.Connection]:
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("PRAGMA foreign_keys = ON")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version == SCHEMA_VERSION:
+            if version == schema_identity():
                 return conn
             empty = conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0
             if empty:
                 conn.executescript(SCHEMA_SQL)
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                conn.execute(f"PRAGMA user_version = {schema_identity()}")
                 conn.commit()
                 return conn
-            # Old schema version: rebuild from scratch on the next attempt.
+            # Stale schema or extractor source changed: rebuild from scratch
+            # on the next attempt.
             conn.close()
             conn = None
             _delete_db_files(db_path)
@@ -446,7 +487,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]]) -> list[FileSt
 
 def load_indexed_files(conn: sqlite3.Connection) -> list[IndexedFile]:
     rows = conn.execute(
-        "SELECT id, path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len FROM files"
+        "SELECT id, path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len, tail_hash FROM files"
     ).fetchall()
     return [IndexedFile(*row) for row in rows]
 
@@ -478,6 +519,20 @@ def _head_hash(path: str, length: int) -> str:
         return hashlib.sha1(f.read(length)).hexdigest()
 
 
+def _tail_hash_bytes(region: bytes) -> str:
+    """sha1 of the last TAIL_HASH_BYTES of an in-memory indexed region."""
+    return hashlib.sha1(region[-TAIL_HASH_BYTES:]).hexdigest()
+
+
+def _tail_hash(path: str, end: int) -> str:
+    """sha1 of the last TAIL_HASH_BYTES of the on-disk region [0, end).
+    Equals _tail_hash_bytes() over the same region."""
+    start = max(0, end - TAIL_HASH_BYTES)
+    with open(path, "rb") as f:
+        f.seek(start)
+        return hashlib.sha1(f.read(end - start)).hexdigest()
+
+
 def _delete_file_rows(conn: sqlite3.Connection, file_id: int) -> None:
     # FK cascades cover items/fts_map/cc_tool_counts but not the FTS virtual
     # table, whose rows must be deleted explicitly first.
@@ -499,12 +554,12 @@ def _insert_fts_segment(conn: sqlite3.Connection, file_id: int, body: str) -> No
 
 
 def _insert_file_row(conn: sqlite3.Connection, fs: FileStat,
-                     indexed_bytes: int, head: bytes) -> int:
+                     indexed_bytes: int, head: bytes, tail_hash: str) -> int:
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes, head_hash, head_len, tail_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (fs.path, fs.source, fs.mtime_ns, fs.ctime_ns, fs.size, indexed_bytes,
-         hashlib.sha1(head).hexdigest(), len(head)),
+         hashlib.sha1(head).hexdigest(), len(head), tail_hash),
     )
     return cur.lastrowid
 
@@ -522,36 +577,41 @@ def _insert_item_row(conn: sqlite3.Connection, file_id: int, provider: str,
 
 
 def _index_llm_file(conn: sqlite3.Connection, fs: FileStat,
-                    extract_llm_texts: Callable[[dict, str, str], list]) -> None:
+                    extract_llm_texts: Callable[[dict, str, str], list]) -> Optional[str]:
+    """Index one claude/chatgpt JSON file. Returns the path on failure.
+
+    A file that cannot be read or parsed gets NO files row: it stays out of
+    the index, is retried (and warned about) on every run, and self-heals if
+    a partial cloud sync later completes. Corrupt archive files must stay
+    loud — they should never exist, so they warrant manual attention rather
+    than a silent permanent skip.
+    """
     try:
         raw = Path(fs.path).read_bytes()
-    except OSError as e:
-        print(f"Warning: could not index {fs.path}: {e}", file=sys.stderr)
-        return
-    try:
         data = json.loads(raw)
         texts = extract_llm_texts(data, fs.item_type, fs.provider)
         meta = make_llm_item_meta(data, fs.item_type, texts)
-    except (ValueError, KeyError, TypeError) as e:
-        # Unparseable files still get a files row so they aren't retried on
-        # every run; with no fts/items rows they can never match, which is
-        # also what the scan path concludes (with a warning each time).
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"Warning: could not index {fs.path}: {e}", file=sys.stderr)
-        _insert_file_row(conn, fs, fs.size, raw[:HEAD_HASH_BYTES])
-        return
-    file_id = _insert_file_row(conn, fs, len(raw), raw[:HEAD_HASH_BYTES])
+        return fs.path
+    file_id = _insert_file_row(conn, fs, len(raw), raw[:HEAD_HASH_BYTES],
+                               _tail_hash_bytes(raw))
     _insert_fts_segment(conn, file_id, searchable_body(texts))
     _insert_item_row(conn, file_id, fs.provider, fs.email, meta)
+    return None
 
 
-def _index_cc_file(conn: sqlite3.Connection, fs: FileStat) -> None:
+def _index_cc_file(conn: sqlite3.Connection, fs: FileStat) -> Optional[str]:
+    """Index one Claude Code JSONL transcript. Returns the path on failure
+    (unreadable file; retried and re-warned every run, like LLM files)."""
     try:
         raw_lines, end_offset, head = _read_complete_lines(fs.path, 0)
+        tail_hash = _tail_hash(fs.path, end_offset)
     except OSError as e:
         print(f"Warning: could not index {fs.path}: {e}", file=sys.stderr)
-        return
+        return fs.path
     lines = parse_jsonl_texts(raw_lines, fs.path)
-    file_id = _insert_file_row(conn, fs, end_offset, head)
+    file_id = _insert_file_row(conn, fs, end_offset, head, tail_hash)
     if fs.source == SOURCE_CC:
         texts = ccp.extract_searchable_text(lines)
         meta = make_cc_item_meta(ccp.extract_session_metadata(lines), texts)
@@ -563,14 +623,16 @@ def _index_cc_file(conn: sqlite3.Connection, fs: FileStat) -> None:
             "INSERT INTO cc_tool_counts(file_id, tool, count) VALUES (?, ?, ?)",
             (file_id, tool, count),
         )
+    return None
 
 
-def _append_cc_file(conn: sqlite3.Connection, fs: FileStat, ix: IndexedFile) -> None:
+def _append_cc_file(conn: sqlite3.Connection, fs: FileStat, ix: IndexedFile) -> Optional[str]:
     try:
         raw_lines, end_offset, head = _read_complete_lines(fs.path, ix.indexed_bytes)
+        tail_hash = _tail_hash(fs.path, end_offset)
     except OSError as e:
         print(f"Warning: could not index {fs.path}: {e}", file=sys.stderr)
-        return
+        return fs.path
     lines = parse_jsonl_texts(raw_lines, fs.path)
     if fs.source == SOURCE_CC:
         _append_cc_search_rows(conn, fs, ix, lines)
@@ -583,13 +645,15 @@ def _append_cc_file(conn: sqlite3.Connection, fs: FileStat, ix: IndexedFile) -> 
         )
 
     # Re-hash the head over up to 1KB of the (possibly longer) file so the
-    # append-vs-rewrite check strengthens as small files grow.
+    # append-vs-rewrite check strengthens as small files grow; the tail hash
+    # advances to the new end of the indexed region.
     conn.execute(
-        "UPDATE files SET mtime_ns = ?, ctime_ns = ?, size = ?, indexed_bytes = ?, head_hash = ?, head_len = ? "
+        "UPDATE files SET mtime_ns = ?, ctime_ns = ?, size = ?, indexed_bytes = ?, head_hash = ?, head_len = ?, tail_hash = ? "
         "WHERE id = ?",
         (fs.mtime_ns, fs.ctime_ns, fs.size, end_offset,
-         hashlib.sha1(head).hexdigest(), len(head), ix.id),
+         hashlib.sha1(head).hexdigest(), len(head), tail_hash, ix.id),
     )
+    return None
 
 
 def _append_cc_search_rows(conn: sqlite3.Connection, fs: FileStat,
@@ -626,9 +690,14 @@ def _append_cc_search_rows(conn: sqlite3.Connection, fs: FileStat,
 
 
 def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
-              extract_llm_texts: Callable[[dict, str, str], list]) -> None:
+              extract_llm_texts: Callable[[dict, str, str], list]) -> list:
     """Apply a ReconcilePlan in batched transactions (interrupt-safe: a
-    killed run loses at most one uncommitted batch and resumes next run)."""
+    killed run loses at most one uncommitted batch and resumes next run).
+
+    Returns the paths of files that could not be indexed (unreadable or
+    corrupt); they hold no index rows and will be retried — and re-warned
+    about — on every run until fixed or removed.
+    """
     total = len(plan.new) + len(plan.rewritten) + len(plan.maybe_appended) + len(plan.removed)
     if total > 50:
         print(f"Indexing {total} archive file(s)...", file=sys.stderr)
@@ -643,6 +712,7 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
         for fs in plan.new:
             yield ("new", fs, None)
 
+    failed = []
     pending = 0
     conn.execute("BEGIN IMMEDIATE")
     for op, fs, ix in ops():
@@ -650,53 +720,61 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
             _delete_file_rows(conn, ix.id)
         elif op == "rewrite":
             _delete_file_rows(conn, ix.id)
-            _index_file(conn, fs, extract_llm_texts)
+            failed.append(_index_file(conn, fs, extract_llm_texts))
         elif op == "append?":
             try:
-                is_append = _head_hash(fs.path, ix.head_len) == ix.head_hash
+                # Head AND tail of the already-indexed region must both be
+                # unchanged; a mid-file rewrite that spares the first 1KB
+                # would otherwise be mis-taken for an append and its new
+                # middle content never indexed.
+                is_append = (_head_hash(fs.path, ix.head_len) == ix.head_hash
+                             and _tail_hash(fs.path, ix.indexed_bytes) == ix.tail_hash)
             except OSError:
                 continue  # file vanished mid-reconcile; next run handles it
             if is_append:
-                _append_cc_file(conn, fs, ix)
+                failed.append(_append_cc_file(conn, fs, ix))
             else:
                 _delete_file_rows(conn, ix.id)
-                _index_file(conn, fs, extract_llm_texts)
+                failed.append(_index_file(conn, fs, extract_llm_texts))
         else:
-            _index_file(conn, fs, extract_llm_texts)
+            failed.append(_index_file(conn, fs, extract_llm_texts))
         pending += 1
         if pending >= RECONCILE_BATCH:
             conn.commit()
             conn.execute("BEGIN IMMEDIATE")
             pending = 0
     conn.commit()
+    return [path for path in failed if path is not None]
 
 
-def _index_file(conn, fs: FileStat, extract_llm_texts) -> None:
+def _index_file(conn, fs: FileStat, extract_llm_texts) -> Optional[str]:
     if fs.source == SOURCE_LLM:
-        _index_llm_file(conn, fs, extract_llm_texts)
-    else:
-        _index_cc_file(conn, fs)
+        return _index_llm_file(conn, fs, extract_llm_texts)
+    return _index_cc_file(conn, fs)
 
 
 def refresh(conn: sqlite3.Connection, data_dir: Path,
             cc_sources: list[tuple[str, Path]],
-            extract_llm_texts: Callable[[dict, str, str], list]) -> bool:
-    """Bring the index up to date with the filesystem. Returns False when
-    the index could not be refreshed (caller should fall back to scanning).
+            extract_llm_texts: Callable[[dict, str, str], list]) -> Optional[list]:
+    """Bring the index up to date with the filesystem.
+
+    Returns the (usually empty) list of file paths that could not be
+    indexed, or None when the index itself could not be refreshed and the
+    caller should fall back to scanning.
     """
     try:
         disk = scan_disk(data_dir, cc_sources)
         plan = diff_index(disk, load_indexed_files(conn))
-        if not plan.is_noop():
-            reconcile(conn, plan, extract_llm_texts)
-        return True
+        if plan.is_noop():
+            return []
+        return reconcile(conn, plan, extract_llm_texts)
     except sqlite3.DatabaseError as e:
         # Corruption: drop the db so the next run rebuilds it cleanly.
         # (OperationalError — e.g. locked — is a subclass; deleting on a
         # transient lock would be wrong, so it is handled first.)
         if isinstance(e, sqlite3.OperationalError):
             print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
-            return False
+            return None
         try:
             db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
             conn.close()
@@ -705,7 +783,7 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
             pass
         print(f"Warning: search index corrupt ({e}); rebuilt on next run. Using full scan.",
               file=sys.stderr)
-        return False
+        return None
 
 
 def candidate_paths(conn: sqlite3.Connection, fts_query: str,

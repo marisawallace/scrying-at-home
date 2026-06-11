@@ -314,49 +314,56 @@ def search_item(filepath: Path, query: str, item_type: str, email: str, provider
         print(f"Warning: Could not read {filepath}: {e}", file=sys.stderr)
         return None
 
-    # Extract text based on type and provider
-    texts = extract_llm_texts(data, item_type, provider)
+    # Extract text based on type and provider. A file that parses as JSON
+    # but has the wrong shape (missing uuid/created_at, non-dict top level)
+    # is corrupt: warn and skip it, same as unparseable JSON — the index
+    # path (search_index._index_llm_file) concludes identically.
+    try:
+        texts = extract_llm_texts(data, item_type, provider)
 
-    matches = find_matches_in_texts(texts, query, exact=exact)
+        matches = find_matches_in_texts(texts, query, exact=exact)
 
-    if not matches:
+        if not matches:
+            return None
+
+        # Calculate total score
+        total_score = sum(m.score for m in matches)
+
+        # Bonus score if match in name
+        name = data.get("name", "")
+        name_lower = name.lower() if name else ""
+        query_lower = query.lower()
+        if exact:
+            name_matches = query_lower in name_lower
+        else:
+            name_matches = all(w in name_lower for w in query_lower.split())
+        if query.strip() and name and name_matches:
+            total_score += 5
+
+        # Determine updated_at from last message (conversations) or top-level field
+        updated_at = data.get("updated_at", data["created_at"])
+        if item_type == "conversation":
+            messages = data.get("chat_messages", [])
+            if messages:
+                last_msg_date = messages[-1].get("created_at", "")
+                if last_msg_date:
+                    updated_at = last_msg_date
+
+        return SearchResult(
+            type=item_type,
+            uuid=data["uuid"],
+            name=name if name else "(untitled)",
+            created_at=data["created_at"],
+            updated_at=updated_at,
+            email=email,
+            provider=provider,
+            filepath=filepath,
+            matches=matches,
+            total_score=total_score
+        )
+    except (KeyError, TypeError, AttributeError) as e:
+        print(f"Warning: Could not read {filepath}: {e}", file=sys.stderr)
         return None
-
-    # Calculate total score
-    total_score = sum(m.score for m in matches)
-
-    # Bonus score if match in name
-    name = data.get("name", "")
-    name_lower = name.lower() if name else ""
-    query_lower = query.lower()
-    if exact:
-        name_matches = query_lower in name_lower
-    else:
-        name_matches = all(w in name_lower for w in query_lower.split())
-    if query.strip() and name and name_matches:
-        total_score += 5
-
-    # Determine updated_at from last message (conversations) or top-level field
-    updated_at = data.get("updated_at", data["created_at"])
-    if item_type == "conversation":
-        messages = data.get("chat_messages", [])
-        if messages:
-            last_msg_date = messages[-1].get("created_at", "")
-            if last_msg_date:
-                updated_at = last_msg_date
-
-    return SearchResult(
-        type=item_type,
-        uuid=data["uuid"],
-        name=name if name else "(untitled)",
-        created_at=data["created_at"],
-        updated_at=updated_at,
-        email=email,
-        provider=provider,
-        filepath=filepath,
-        matches=matches,
-        total_score=total_score
-    )
 
 
 def extract_llm_texts(data: dict, item_type: str, provider: str) -> List[str]:
@@ -536,6 +543,19 @@ def results_from_index_items(rows: List[dict], apply_recency_boost: bool = True)
             extra=extra,
         ))
     return results
+
+
+def unreadable_files_banner(paths: List[str]) -> str:
+    """Loud stderr summary for archive files that could not be indexed.
+
+    Corrupt archive files should never exist, so they warrant manual
+    attention — this prints on every run until they are fixed. (A partial
+    cloud sync resolves on its own once the file finishes transferring.)
+    """
+    lines = [f"⚠ {len(paths)} archive file(s) could not be read and are missing from results:"]
+    lines += [f"    {p}" for p in paths]
+    lines.append("  Fix or remove them; they will be retried on every search.")
+    return "\n".join(lines)
 
 
 def gather_cc_tool_counts(sources: List[Tuple[str, Path]]):
@@ -928,15 +948,17 @@ Examples:
             search_index.drop_index(index_path)
         index_conn = search_index.open_index(index_path)
         if index_conn is not None:
-            ok = search_index.refresh(
+            failed_files = search_index.refresh(
                 index_conn, data_dir, parse_claude_code_sources(config), extract_llm_texts
             )
-            if not ok:
+            if failed_files is None:
                 try:
                     index_conn.close()
                 except Exception:
                     pass
                 index_conn = None
+            elif failed_files:
+                print(unreadable_files_banner(failed_files), file=sys.stderr)
 
     candidates_llm = candidates_cc = None
     if index_conn is not None and query:
