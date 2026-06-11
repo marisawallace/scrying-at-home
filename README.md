@@ -188,13 +188,13 @@ Search runs on an SQLite FTS5 index that's built automatically on the first run 
 
 The index rebuilds itself if deleted, corrupted, or outdated — including automatically whenever the extraction code changes, so it can never serve results from stale indexing logic.
 
-A corrupt archive file (which should never happen) is skipped with a warning on every search until you fix or remove it; searches keep working without it.
-
 Default location is `~/.cache/clauding-at-home/index.db`. Override with:
 
 ```
 SEARCH_INDEX_DB=~/Documents/clauding-at-home-index.db
 ```
+
+but the index must be stored on a local filesystem.
 
 
 ## Known Limitations

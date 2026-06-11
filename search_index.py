@@ -32,7 +32,7 @@ import json
 import sqlite3
 import sys
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -351,6 +351,17 @@ def _refresh_lock(db_path: Path):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+def _rollback_quietly(conn: sqlite3.Connection) -> None:
+    """Discard an aborted transaction so a reused connection can BEGIN again.
+    A failed statement leaves the transaction open in sqlite3; without this a
+    subsequent reconcile() hits 'cannot start a transaction within a
+    transaction'. Best-effort: a dead connection has nothing to roll back."""
+    try:
+        conn.rollback()
+    except sqlite3.Error:
+        pass
+
+
 def _delete_db_files(db_path: Path) -> None:
     for suffix in ("", "-wal", "-shm"):
         Path(str(db_path) + suffix).unlink(missing_ok=True)
@@ -368,7 +379,19 @@ def open_index(db_path: Path) -> Optional[sqlite3.Connection]:
     A corrupt or stale-schemed database is deleted and rebuilt — the index
     is derived state. Returns None when SQLite is unusable; callers fall
     back to the full scan.
+
+    The open/rebuild runs under the same advisory lock as refresh(): a schema
+    bump (or corruption) makes every concurrent process delete-and-recreate
+    the db at once, and without the lock one process can write through a conn
+    pointing at an inode another already replaced. The lock is released before
+    returning; refresh() re-acquires it for the indexing pass.
     """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with _refresh_lock(db_path):
+        return _open_index_locked(db_path)
+
+
+def _open_index_locked(db_path: Path) -> Optional[sqlite3.Connection]:
     for attempt in (1, 2):
         conn = None
         try:
@@ -652,12 +675,15 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
     refresh naturally becomes a no-op. Readers take no lock.
     """
     try:
-        db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+        raw_db_path = conn.execute("PRAGMA database_list").fetchone()[2]
     except sqlite3.Error as e:
         print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
         return None
+    # An in-memory db (empty path) is private to this process — nothing to
+    # serialize against, and no real file to lock — so skip the lock there.
+    lock = _refresh_lock(Path(raw_db_path)) if raw_db_path else nullcontext()
     try:
-        with _refresh_lock(db_path):
+        with lock:
             disk = scan_disk(data_dir, cc_sources)
             plan = diff_index(disk, load_indexed_files(conn))
             if plan.is_noop():
@@ -668,6 +694,9 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
         # constraint otherwise tripped). This is contention, never
         # corruption: warn and fall back to the full scan this run; the next
         # run sees the already-indexed file and no-ops. Never delete the db.
+        # Roll back the aborted reconcile transaction so a reused connection
+        # can BEGIN cleanly next time.
+        _rollback_quietly(conn)
         print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
         return None
     except sqlite3.DatabaseError as e:
@@ -675,6 +704,7 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
         # (OperationalError — e.g. locked — is a subclass; deleting on a
         # transient lock would be wrong, so it is handled first.)
         if isinstance(e, sqlite3.OperationalError):
+            _rollback_quietly(conn)
             print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
             return None
         try:
