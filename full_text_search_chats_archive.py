@@ -99,9 +99,10 @@ class SearchResult:
             return f"Unknown provider: {self.provider}"
 
 
-def score_match(match_text: str, query: str) -> float:
+def score_match(match_lower: str, query_lower: str) -> float:
     """
-    Calculate relevance score for a match.
+    Calculate relevance score for a match. Both arguments must already be
+    lowercased by the caller.
 
     Scoring criteria:
     - Exact phrase match: +10
@@ -110,9 +111,6 @@ def score_match(match_text: str, query: str) -> float:
     - Partial word match (per word): +1
     - Match in title/name: +5 (handled in search_item)
     """
-    match_lower = match_text.lower()
-    query_lower = query.lower()
-
     score = 0.0
 
     # Exact phrase match
@@ -261,6 +259,13 @@ def find_matches_in_texts(texts: List[str], query: str, exact: bool = False) -> 
             return [Match(text=preview, score=0.0)]
         return []
 
+    # Patterns depend only on the query: compile once, not per matching text.
+    query_words = query_lower.split()
+    if exact:
+        patterns = [re.compile(re.escape(query_lower), re.IGNORECASE)]
+    else:
+        patterns = [re.compile(re.escape(word), re.IGNORECASE) for word in query_words]
+
     for text in texts:
         if not text:
             continue
@@ -268,21 +273,15 @@ def find_matches_in_texts(texts: List[str], query: str, exact: bool = False) -> 
         text_lower = text.lower()
 
         # Check if query matches
-        query_words = query_lower.split()
         if exact:
             matches_text = query_lower in text_lower
         else:
             matches_text = all(word in text_lower for word in query_words)
 
         if matches_text:
-            score = score_match(text, query)
+            score = score_match(text_lower, query_lower)
 
             # Extract context around matches (up to 200 chars)
-            if exact:
-                patterns = [re.compile(re.escape(query_lower), re.IGNORECASE)]
-            else:
-                patterns = [re.compile(re.escape(word), re.IGNORECASE) for word in query_words]
-
             for pattern in patterns:
                 for match in pattern.finditer(text):
                     start = max(0, match.start() - 100)
