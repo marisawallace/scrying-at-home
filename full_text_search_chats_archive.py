@@ -613,6 +613,122 @@ def results_from_index_items(rows: List[dict], apply_recency_boost: bool = True)
     return results
 
 
+def name_bonus(name_raw: str, query: str, exact: bool) -> float:
+    """The +5 title bonus, replicating search_item()/search_claude_code_archive().
+
+    Keyed off the RAW extracted name (empty when the item had no name), so an
+    untitled item — stored display name "(untitled)" — never earns the bonus,
+    while an item literally titled "(untitled)" does. Both scan paths require a
+    truthy name; cc names are always truthy, so this one guard covers both.
+    """
+    if not query.strip() or not name_raw:
+        return 0.0
+    name_lower = name_raw.lower()
+    query_lower = query.lower()
+    if exact:
+        hit = query_lower in name_lower
+    else:
+        hit = all(w in name_lower for w in query_lower.split())
+    return 5.0 if hit else 0.0
+
+
+def results_from_index_rows(
+    rows: List[dict], query: str, exact: bool, apply_recency_boost: bool
+) -> Tuple[List[SearchResult], set]:
+    """Rescore index rows into SearchResults, replicating the scan path exactly.
+
+    Returns (results, fallback_paths). A row whose stored texts are missing
+    (LEFT JOIN gave None) or unparseable is never scored as empty: its path
+    joins the fallback set, and main() re-scans that file from disk — the
+    safety valve that keeps stored texts a pure accelerator.
+    """
+    results: List[SearchResult] = []
+    fallback: set = set()
+    for row in rows:
+        raw = row["texts"]
+        if raw is None:
+            fallback.add(row["path"])
+            continue
+        try:
+            texts = json.loads(raw)
+        except (ValueError, TypeError):
+            fallback.add(row["path"])
+            continue
+
+        matches = find_matches_in_texts(texts, query, exact=exact)
+        if not matches:
+            continue  # FTS false positive: filtered exactly as the scan path does
+
+        total_score = sum(m.score for m in matches) + name_bonus(row["name_raw"], query, exact)
+
+        extra = None
+        if row["provider"] == "claude-code":
+            extra = {
+                "cwd": row["cwd"],
+                "git_branch": row["git_branch"],
+                "host": row["host"],
+            }
+        results.append(SearchResult(
+            type=row["item_type"],
+            uuid=row["uuid"],
+            name=row["name"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            email=row["email"],
+            provider=row["provider"],
+            filepath=Path(row["path"]),
+            matches=matches,
+            total_score=total_score,
+            extra=extra,
+            model=row.get("model", ""),
+        ))
+
+    if apply_recency_boost:
+        for result in results:
+            result.total_score += recency_boost(result.updated_at)
+
+    results.sort(key=lambda r: -r.total_score)
+    return results, fallback
+
+
+def _index_rows_for_query(index_conn, source, query, exact):
+    """Fetch rescore rows for `source`: FTS-narrowed when the trigram index can
+    serve the query, otherwise every searchable file (short-word queries the
+    index can't filter). None propagates a db error → caller scans."""
+    import search_index
+    fts_q = search_index.build_fts_query(query, exact)
+    if fts_q is not None:
+        return search_index.candidate_rows(index_conn, fts_q, source)
+    return search_index.all_searchable_rows(index_conn, source)
+
+
+def search_llm_with_index(index_conn, data_dir, query, exact, recency):
+    """LLM (claude/chatgpt) query results via the index, falling back to a
+    scan for the whole source on a db error and for individual files whose
+    stored texts are missing/corrupt."""
+    rows = _index_rows_for_query(index_conn, "llm", query, exact)
+    if rows is None:
+        return search_archive(data_dir, query, apply_recency_boost=recency, exact=exact)
+    results, fallback = results_from_index_rows(rows, query, exact, recency)
+    if fallback:
+        results += search_archive(data_dir, query, apply_recency_boost=recency,
+                                  exact=exact, candidates=fallback)
+    return results
+
+
+def search_cc_with_index(index_conn, cc_sources, query, exact, recency):
+    """Claude Code query results via the index, with the same per-source and
+    per-file scan fallbacks as search_llm_with_index."""
+    rows = _index_rows_for_query(index_conn, "claude-code", query, exact)
+    if rows is None:
+        return search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=exact)
+    results, fallback = results_from_index_rows(rows, query, exact, recency)
+    if fallback:
+        results += search_claude_code_archive(cc_sources, query, apply_recency_boost=recency,
+                                              exact=exact, candidates=fallback)
+    return results
+
+
 def unreadable_files_banner(paths: List[str]) -> str:
     """Loud stderr summary for archive files that could not be indexed.
 
@@ -1033,13 +1149,8 @@ Examples:
             elif failed_files:
                 print(unreadable_files_banner(failed_files), file=sys.stderr)
 
-    candidates_llm = candidates_cc = None
-    if index_conn is not None and query:
-        fts_q = search_index.build_fts_query(query, args.exact)
-        if fts_q is not None:
-            candidates_llm = search_index.candidate_paths(index_conn, fts_q, search_index.SOURCE_LLM)
-            candidates_cc = search_index.candidate_paths(index_conn, fts_q, search_index.SOURCE_CC)
     index_browse = index_conn is not None and no_query
+    index_query = index_conn is not None and bool(query)
 
     # Perform search across requested sources
     results: List[SearchResult] = []
@@ -1047,31 +1158,45 @@ Examples:
 
     current_host = resolve_host_name(config)
 
-    if args.source in ("all", "llm"):
-        rows = search_index.browse_items(index_conn, search_index.SOURCE_LLM) if index_browse else None
-        if rows is not None:
-            results.extend(results_from_index_items(rows, apply_recency_boost=recency))
-        else:
-            results.extend(search_archive(data_dir, query, apply_recency_boost=recency, exact=args.exact, candidates=candidates_llm))
-
-    if args.source in ("all", "claude-code"):
-        cc_sources = parse_claude_code_sources(config)
-        if cc_sources:
-            rows = search_index.browse_items(index_conn, search_index.SOURCE_CC) if index_browse else None
-            if rows is not None:
-                cc_results = results_from_index_items(rows, apply_recency_boost=recency)
+    # One WAL snapshot around every index read in this search, so the llm and
+    # cc candidate+texts reads can't straddle a concurrent refresh commit.
+    from contextlib import nullcontext
+    snapshot = search_index.read_snapshot(index_conn) if index_conn is not None else nullcontext()
+    with snapshot:
+        if args.source in ("all", "llm"):
+            if index_browse:
+                rows = search_index.browse_items(index_conn, search_index.SOURCE_LLM)
+                if rows is not None:
+                    results.extend(results_from_index_items(rows, apply_recency_boost=recency))
+                else:
+                    results.extend(search_archive(data_dir, query, apply_recency_boost=recency, exact=args.exact))
+            elif index_query:
+                results.extend(search_llm_with_index(index_conn, data_dir, query, args.exact, recency))
             else:
-                cc_results = search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=args.exact, candidates=candidates_cc)
-            if args.here:
-                pre_filter = cc_results
-                cc_results = filter_to_here(pre_filter, Path.cwd(), current_host)
-                if pre_filter and not cc_results:
-                    host_is_explicit = bool(config.get(CLAUDE_CODE_HOST_ENV_KEY, "").strip())
-                    print(here_miss_hint(pre_filter, Path.cwd(), current_host, host_is_explicit), file=sys.stderr)
-            results.extend(cc_results)
-        elif args.source == "claude-code":
-            print(f"Error: {CLAUDE_CODE_SOURCES_ENV_KEY} not configured in .env", file=sys.stderr)
-            sys.exit(1)
+                results.extend(search_archive(data_dir, query, apply_recency_boost=recency, exact=args.exact))
+
+        if args.source in ("all", "claude-code"):
+            cc_sources = parse_claude_code_sources(config)
+            if cc_sources:
+                if index_browse:
+                    rows = search_index.browse_items(index_conn, search_index.SOURCE_CC)
+                    cc_results = (results_from_index_items(rows, apply_recency_boost=recency)
+                                  if rows is not None
+                                  else search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=args.exact))
+                elif index_query:
+                    cc_results = search_cc_with_index(index_conn, cc_sources, query, args.exact, recency)
+                else:
+                    cc_results = search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=args.exact)
+                if args.here:
+                    pre_filter = cc_results
+                    cc_results = filter_to_here(pre_filter, Path.cwd(), current_host)
+                    if pre_filter and not cc_results:
+                        host_is_explicit = bool(config.get(CLAUDE_CODE_HOST_ENV_KEY, "").strip())
+                        print(here_miss_hint(pre_filter, Path.cwd(), current_host, host_is_explicit), file=sys.stderr)
+                results.extend(cc_results)
+            elif args.source == "claude-code":
+                print(f"Error: {CLAUDE_CODE_SOURCES_ENV_KEY} not configured in .env", file=sys.stderr)
+                sys.exit(1)
 
     # Re-sort combined results by score
     results.sort(key=lambda r: -r.total_score)

@@ -343,6 +343,82 @@ def test_wrong_shape_json_warns_instead_of_crashing(full_archive_workspace, repo
         assert "conv-uuid-001" not in result.stdout
 
 @pytest.mark.integration
+def test_missing_file_texts_row_rescued_by_scan_fallback(full_archive_workspace, repo_root):
+    # Stored texts are the source of truth for scores — but a missing
+    # file_texts row must never score a file as empty: it falls back to the
+    # real file. Delete one row out-of-band, then assert results stay
+    # identical to a scan.
+    import sqlite3
+    ws = full_archive_workspace
+    _search(repo_root, ws, "Python function", "-j")  # build index
+
+    conn = sqlite3.connect(ws / "search_index.db")
+    conv_dir = ws / "data/llm_data/claude/claude-test@example.com/conversations"
+    conv_file = next(conv_dir.glob("*Test-Conversation-1*"))
+    fid = conn.execute("SELECT id FROM files WHERE path = ?", (str(conv_file),)).fetchone()[0]
+    conn.execute("DELETE FROM file_texts WHERE file_id = ?", (fid,))
+    conn.commit()
+    conn.close()
+
+    out = _assert_index_matches_scan(repo_root, ws, "Python function", "-j")
+    assert "conv-uuid-001" in out
+
+
+@pytest.mark.integration
+def test_corrupt_file_texts_rescued_by_scan_fallback(full_archive_workspace, repo_root):
+    # Non-JSON in file_texts.texts must trigger the same per-file scan rescue
+    # as a missing row, not score the file as empty.
+    import sqlite3
+    ws = full_archive_workspace
+    _search(repo_root, ws, "Python function", "-j")  # build index
+
+    conn = sqlite3.connect(ws / "search_index.db")
+    conv_dir = ws / "data/llm_data/claude/claude-test@example.com/conversations"
+    conv_file = next(conv_dir.glob("*Test-Conversation-1*"))
+    fid = conn.execute("SELECT id FROM files WHERE path = ?", (str(conv_file),)).fetchone()[0]
+    conn.execute("UPDATE file_texts SET texts = ? WHERE file_id = ?", ("{not json", fid))
+    conn.commit()
+    conn.close()
+
+    out = _assert_index_matches_scan(repo_root, ws, "Python function", "-j")
+    assert "conv-uuid-001" in out
+
+
+@pytest.mark.integration
+def test_zero_text_file_not_treated_as_missing(full_archive_workspace, repo_root):
+    # A searchable file that extracts to zero texts gets a `[]` file_texts row,
+    # not a missing one: it never matches and never triggers a fallback scan,
+    # and its presence keeps results identical to a scan.
+    import sqlite3
+    ws = full_archive_workspace
+    conv_dir = ws / "data/llm_data/claude/claude-test@example.com/conversations"
+    # No name, no summary, no messages -> extract_text_from_conversation == []
+    empty = conv_dir / "empty-conv.json"
+    empty.write_text(json.dumps({
+        "uuid": "empty-conv-uuid", "created_at": "2026-01-01T00:00:00Z",
+        "chat_messages": [],
+    }))
+
+    _assert_index_matches_scan(repo_root, ws, "Python function", "-j")
+
+    # The zero-text file is stored as an empty-array row, distinct from missing.
+    conn = sqlite3.connect(ws / "search_index.db")
+    fid = conn.execute("SELECT id FROM files WHERE path = ?", (str(empty),)).fetchone()[0]
+    stored = conn.execute("SELECT texts FROM file_texts WHERE file_id = ?", (fid,)).fetchone()
+    conn.close()
+    assert stored is not None and json.loads(stored[0]) == []
+
+
+@pytest.mark.integration
+def test_short_word_query_uses_index_and_matches_scan(full_archive_workspace, repo_root):
+    # Sub-3-char words can't use the trigram index; the index path serves them
+    # via all_searchable_rows instead of a filesystem scan, and the results
+    # must still be identical. "Hi" appears in the chatgpt fixture.
+    ws = full_archive_workspace
+    _assert_index_matches_scan(repo_root, ws, "Hi", "-j")
+
+
+@pytest.mark.integration
 def test_invalid_utf8_jsonl_skipped_and_warned_on_both_paths(full_archive_workspace, repo_root):
     # A JSONL with an invalid UTF-8 byte must be skipped identically by the
     # index path (strict decode in _read_complete_lines) and the scan path

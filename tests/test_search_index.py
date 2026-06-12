@@ -355,6 +355,93 @@ def test_candidates_respect_source_filter(tmp_path):
     conn.close()
 
 
+def _index_full(conn, path, texts, source=si.SOURCE_LLM, name="n", name_raw="n",
+                with_texts=True):
+    """Insert a complete searchable file: files + fts + item (+ file_texts
+    unless with_texts is False, to simulate a missing row)."""
+    cur = conn.execute(
+        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes) "
+        "VALUES (?, ?, 1, 1, 1, 1)", (path, source))
+    fid = cur.lastrowid
+    si._insert_fts_segment(conn, fid, si.searchable_body(texts))
+    if with_texts:
+        si._insert_file_texts(conn, fid, texts)
+    si._insert_item_row(conn, fid, "claude", "me@example.com", {
+        "uuid": "u-" + path, "item_type": "conversation", "name": name,
+        "name_raw": name_raw, "created_at": "c", "updated_at": "u", "host": "",
+        "cwd": "", "git_branch": "", "preview": "p", "has_preview": True,
+    })
+    return fid
+
+
+def test_candidate_rows_shape_and_texts(tmp_path):
+    conn = si.open_index(tmp_path / "index.db")
+    _index_full(conn, "/a.json", ["needle in here", "second text"], name_raw="Title")
+    q = si.build_fts_query("needle", exact=False)
+    rows = si.candidate_rows(conn, q, si.SOURCE_LLM)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["path"] == "/a.json"
+    assert json.loads(row["texts"]) == ["needle in here", "second text"]
+    assert row["name_raw"] == "Title"
+    assert row["uuid"] == "u-/a.json"
+    assert row["provider"] == "claude"
+    conn.close()
+
+
+def test_candidate_rows_missing_file_texts_surfaces_none(tmp_path):
+    # LEFT JOIN: a file with no file_texts row appears with texts=None (the
+    # rescore fallback signal), never dropped from the candidate list.
+    conn = si.open_index(tmp_path / "index.db")
+    _index_full(conn, "/a.json", ["needle here"], with_texts=False)
+    q = si.build_fts_query("needle", exact=False)
+    rows = si.candidate_rows(conn, q, si.SOURCE_LLM)
+    assert len(rows) == 1
+    assert rows[0]["texts"] is None
+    conn.close()
+
+
+def test_all_searchable_rows_includes_zero_text_file(tmp_path):
+    conn = si.open_index(tmp_path / "index.db")
+    _index_full(conn, "/a.json", ["alpha"])
+    _index_full(conn, "/b.json", [])  # zero texts: no fts row, but a row here
+    rows = si.all_searchable_rows(conn, si.SOURCE_LLM)
+    paths = {r["path"]: r for r in rows}
+    assert set(paths) == {"/a.json", "/b.json"}
+    assert json.loads(paths["/b.json"]["texts"]) == []
+    conn.close()
+
+
+def test_all_searchable_rows_respects_source(tmp_path):
+    conn = si.open_index(tmp_path / "index.db")
+    _index_full(conn, "/a.json", ["x"], source=si.SOURCE_LLM)
+    _index_full(conn, "/b.jsonl", ["y"], source=si.SOURCE_CC)
+    assert {r["path"] for r in si.all_searchable_rows(conn, si.SOURCE_LLM)} == {"/a.json"}
+    assert {r["path"] for r in si.all_searchable_rows(conn, si.SOURCE_CC)} == {"/b.jsonl"}
+    conn.close()
+
+
+def test_read_snapshot_commits_and_nests(tmp_path):
+    conn = si.open_index(tmp_path / "index.db")
+    _index_full(conn, "/a.json", ["needle"])
+    conn.commit()  # close the implicit write transaction from the inserts
+    # A fresh read snapshot opens and commits a transaction cleanly.
+    assert not conn.in_transaction
+    with si.read_snapshot(conn) as c:
+        assert c.in_transaction
+        rows = si.all_searchable_rows(conn, si.SOURCE_LLM)
+        assert len(rows) == 1
+    assert not conn.in_transaction
+    # Nesting is harmless: an already-open transaction is left for the outer
+    # caller to close.
+    conn.execute("BEGIN")
+    with si.read_snapshot(conn):
+        assert conn.in_transaction
+    assert conn.in_transaction  # inner helper did not close the outer txn
+    conn.commit()
+    conn.close()
+
+
 def test_lookup_uuid_roundtrip(tmp_path):
     conn = si.open_index(tmp_path / "index.db")
     cur = conn.execute(

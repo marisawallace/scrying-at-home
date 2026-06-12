@@ -40,7 +40,7 @@ from typing import Callable, Optional
 
 import claude_code_parser as ccp
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 RECONCILE_BATCH = 200
 
 # Below this many files a refresh is fast enough that progress output is just
@@ -116,6 +116,13 @@ CREATE TABLE items (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     email       TEXT NOT NULL,              -- account email; project slug for claude-code
+    name_raw    TEXT NOT NULL DEFAULT '',   -- raw extracted name (pre-(untitled)
+                                            -- substitution); the search name bonus
+                                            -- replicates the scan path, which keys
+                                            -- the bonus off the raw, possibly-empty
+                                            -- name. '' here means "no name", which
+                                            -- must stay distinct from a conversation
+                                            -- literally titled "(untitled)".
     model       TEXT NOT NULL DEFAULT '',   -- raw provider model id; '' if unknown
     host        TEXT NOT NULL DEFAULT '',
     cwd         TEXT NOT NULL DEFAULT '',
@@ -143,6 +150,17 @@ CREATE TABLE cc_tool_counts (
     tool    TEXT NOT NULL,
     count   INTEGER NOT NULL,
     PRIMARY KEY (file_id, tool)
+);
+
+CREATE TABLE file_texts (
+    file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    texts   TEXT NOT NULL   -- JSON array of original-case extracted texts, in
+                            -- extraction order; boundaries are preserved
+                            -- (matching is per-text, and texts may themselves
+                            -- contain newlines). Present for every searchable
+                            -- file, including ones with zero texts ([]): a
+                            -- missing row means "fall back to the real file",
+                            -- which must stay distinct from "no texts".
 );
 """
 
@@ -251,6 +269,7 @@ def make_llm_item_meta(data: dict, item_type: str, texts: list[str]) -> dict:
         "uuid": data["uuid"],
         "item_type": item_type,
         "name": name if name else "(untitled)",
+        "name_raw": name,  # raw, possibly empty: drives the name bonus
         "created_at": data["created_at"],
         "updated_at": updated_at,
         "model": "",  # filled by the caller, which has the provider
@@ -270,6 +289,7 @@ def make_cc_item_meta(metadata: dict, texts: list[str]) -> dict:
         "uuid": metadata["session_id"],
         "item_type": "conversation",
         "name": metadata["name"],
+        "name_raw": metadata["name"],  # cc names are always non-empty: name == raw
         "created_at": metadata["created_at"],
         "updated_at": metadata["updated_at"],
         "model": metadata.get("model", ""),
@@ -606,16 +626,28 @@ def _insert_file_row(conn: sqlite3.Connection, fs: FileStat,
     return cur.lastrowid
 
 
+def _insert_file_texts(conn: sqlite3.Connection, file_id: int, texts: list) -> None:
+    """Store the original-case extracted texts as a JSON array. Written for
+    every searchable file, including zero-text files ([]), so the rescore path
+    can tell "no texts" (score nothing, no fallback) from a missing row (read
+    the real file)."""
+    conn.execute(
+        "INSERT INTO file_texts(file_id, texts) VALUES (?, ?)",
+        (file_id, json.dumps(texts)),
+    )
+
+
 def _insert_item_row(conn: sqlite3.Connection, file_id: int, provider: str,
                      email: str, meta: dict) -> None:
     conn.execute(
-        "INSERT INTO items(file_id, uuid, item_type, provider, name, created_at, "
-        "updated_at, email, model, host, cwd, git_branch, preview, has_preview) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO items(file_id, uuid, item_type, provider, name, name_raw, "
+        "created_at, updated_at, email, model, host, cwd, git_branch, preview, "
+        "has_preview) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (file_id, meta["uuid"], meta["item_type"], provider, meta["name"],
-         meta["created_at"], meta["updated_at"], email, meta.get("model", ""),
-         meta["host"], meta["cwd"], meta["git_branch"], meta["preview"],
-         int(meta["has_preview"])),
+         meta.get("name_raw", meta["name"]), meta["created_at"], meta["updated_at"],
+         email, meta.get("model", ""), meta["host"], meta["cwd"], meta["git_branch"],
+         meta["preview"], int(meta["has_preview"])),
     )
 
 
@@ -641,6 +673,7 @@ def _index_llm_file(conn: sqlite3.Connection, fs: FileStat,
         return fs.path
     file_id = _insert_file_row(conn, fs, len(raw))
     _insert_fts_segment(conn, file_id, searchable_body(texts))
+    _insert_file_texts(conn, file_id, texts)
     _insert_item_row(conn, file_id, fs.provider, fs.email, meta)
     return None
 
@@ -663,6 +696,7 @@ def _index_cc_file(conn: sqlite3.Connection, fs: FileStat) -> Optional[str]:
         meta = make_cc_item_meta(ccp.extract_session_metadata(lines), texts)
         meta["host"] = fs.host
         _insert_fts_segment(conn, file_id, searchable_body(texts))
+        _insert_file_texts(conn, file_id, texts)
         _insert_item_row(conn, file_id, "claude-code", fs.email, meta)
     for tool, count in ccp.count_tool_uses(lines).items():
         conn.execute(
@@ -821,6 +855,82 @@ def candidate_paths(conn: sqlite3.Connection, fts_query: str,
     except sqlite3.Error as e:
         print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
         return None
+
+
+# Columns every rescore row carries, in SELECT order. Mirrors what the scan
+# path reconstructs per file (make_llm_item_meta / make_cc_item_meta + the
+# raw name and stored texts) so results_from_index_rows can rebuild a
+# SearchResult without touching the file.
+_ROW_KEYS = (
+    "path", "texts", "uuid", "item_type", "provider", "name", "name_raw",
+    "created_at", "updated_at", "email", "model", "host", "cwd", "git_branch",
+)
+_ROW_SELECT = (
+    "f.path, t.texts, i.uuid, i.item_type, i.provider, i.name, i.name_raw, "
+    "i.created_at, i.updated_at, i.email, i.model, i.host, i.cwd, i.git_branch"
+)
+
+
+@contextmanager
+def read_snapshot(conn: sqlite3.Connection):
+    """Wrap a search's index reads in one deferred transaction so they all
+    observe a single WAL snapshot.
+
+    Without it, a concurrent refresh() committing between two reads of one
+    search could pair an old candidate list with newer texts (a silent drop).
+    Reads only: the block is committed on exit (nothing was written), and a
+    BEGIN is issued only if no transaction is already open, so the helper
+    nests harmlessly."""
+    started = not conn.in_transaction
+    if started:
+        conn.execute("BEGIN")
+    try:
+        yield conn
+    finally:
+        if started:
+            conn.commit()
+
+
+def candidate_rows(conn: sqlite3.Connection, fts_query: str,
+                   source: str) -> Optional[list]:
+    """Rescore rows for files whose FTS body matches — a superset of the scan
+    path's matches, with stored texts + item metadata attached so the caller
+    never re-reads the file. file_texts is LEFT JOINed: a missing row surfaces
+    as texts=None (→ caller falls back to the real file), never a dropped file.
+    None means the index could not answer."""
+    try:
+        rows = conn.execute(
+            f"SELECT {_ROW_SELECT} FROM fts "
+            "JOIN fts_map m ON fts.rowid = m.fts_rowid "
+            "JOIN files f ON f.id = m.file_id "
+            "JOIN items i ON i.file_id = f.id "
+            "LEFT JOIN file_texts t ON t.file_id = f.id "
+            "WHERE fts MATCH ? AND f.source = ? ORDER BY f.path",
+            (fts_query, source),
+        ).fetchall()
+    except sqlite3.Error as e:
+        print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
+        return None
+    return [dict(zip(_ROW_KEYS, row)) for row in rows]
+
+
+def all_searchable_rows(conn: sqlite3.Connection, source: str) -> Optional[list]:
+    """Rescore rows for every searchable file in `source`, no FTS filter —
+    serves queries the trigram index can't (build_fts_query returns None for
+    sub-3-char words), replacing the full filesystem scan for those. Same row
+    shape as candidate_rows. None on db error."""
+    try:
+        rows = conn.execute(
+            f"SELECT {_ROW_SELECT} FROM files f "
+            "JOIN items i ON i.file_id = f.id "
+            "LEFT JOIN file_texts t ON t.file_id = f.id "
+            "WHERE f.source = ? ORDER BY f.path",
+            (source,),
+        ).fetchall()
+    except sqlite3.Error as e:
+        print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
+        return None
+    return [dict(zip(_ROW_KEYS, row)) for row in rows]
 
 
 def browse_items(conn: sqlite3.Connection, source: str) -> Optional[list]:
