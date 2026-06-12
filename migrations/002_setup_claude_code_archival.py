@@ -102,83 +102,114 @@ def serialize_sources(pairs: list[tuple[str, str]]) -> str:
     return ",".join(f"{h}={p}" for h, p in pairs)
 
 
+def match_env_key(stripped_line: str, key: str) -> tuple[bool, bool]:
+    """Classify a (whitespace-stripped) .env line against `key`.
+
+    Returns (matches, is_commented). A line matches if, after dropping any
+    leading `#` characters and surrounding whitespace, it reads `key=...`.
+    This recognizes both the active form (`KEY=value`) and the commented
+    documentation forms shipped in .env.example — `#KEY=value` *and*
+    `# KEY=value` (space after the hash) — so the migration edits the example
+    lines in place instead of appending duplicates beneath them. Pure comment
+    lines (`#`, `# some prose`) don't start with `key=` and so don't match.
+    """
+    is_commented = stripped_line.startswith("#")
+    body = stripped_line.lstrip("#").strip()
+    return body.startswith(f"{key}="), is_commented
+
+
+def _diff_status(old_text: str, new_text: str, had_active: bool) -> str:
+    """Classify the effect of a rewrite for console reporting.
+
+    "unchanged" when nothing moved; "updated" when an active line already
+    existed and was rewritten; "added" when the key was newly created or
+    only commented documentation existed before (now activated).
+    """
+    if new_text == old_text:
+        return "unchanged"
+    return "updated" if had_active else "added"
+
+
 def upsert_env_scalar(env_path: Path, key: str, value: str) -> str:
     """Add or update a scalar KEY=VALUE in env_path.
 
-    Returns one of: "added", "updated", "unchanged".
+    Collapses *every* line that sets `key` — active or commented-out
+    documentation, however many — into a single active `key=value` line at
+    the position of the first such line, dropping the rest. This keeps a
+    re-run from leaving a duplicate when an active line and a commented
+    .env.example line coexist. Returns "added" | "updated" | "unchanged".
     """
-    existing_lines = (
-        env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    )
+    old_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     new_lines: list[str] = []
-    found = False
-    status = "added"
-    prefix = f"{key}="
-    commented_prefix = f"#{key}="
+    anchor: int | None = None
+    leading = ""
+    had_active = False
 
-    for line in existing_lines:
-        stripped = line.strip()
-        if stripped.startswith(prefix) or stripped.startswith(commented_prefix):
-            found = True
-            current = stripped.split("=", 1)[1] if "=" in stripped else ""
-            if current == value and not stripped.startswith("#"):
-                status = "unchanged"
-                new_lines.append(line)
-                continue
-            leading = line[:len(line) - len(line.lstrip())]
-            new_lines.append(f"{leading}{prefix}{value}")
-            status = "updated" if not stripped.startswith("#") else "added"
-        else:
+    for line in old_text.splitlines():
+        matches, is_commented = match_env_key(line.strip(), key)
+        if not matches:
             new_lines.append(line)
+            continue
+        had_active = had_active or not is_commented
+        if anchor is None:
+            anchor = len(new_lines)
+            leading = line[: len(line) - len(line.lstrip())]
+            new_lines.append("")  # reserved; filled after the loop
+        # any further matching line is a duplicate — drop it
 
-    if not found:
-        new_lines.append(f"{prefix}{value}")
+    if anchor is None:
+        new_lines.append(f"{key}={value}")
+    else:
+        new_lines[anchor] = f"{leading}{key}={value}"
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    return status
+    new_text = "\n".join(new_lines) + "\n"
+    env_path.write_text(new_text, encoding="utf-8")
+    return _diff_status(old_text, new_text, had_active)
 
 
 def upsert_env_sources(env_path: Path, hostname: str, archive_path: str) -> str:
     """
     Add or update the entry for hostname in CLAUDE_CODE_SOURCES.
-    Returns one of: "added", "updated", "unchanged".
+
+    Merges the host→path pairs from every *active* CLAUDE_CODE_SOURCES line
+    (commented .env.example lines contribute nothing — their laptop=/desktop=
+    pairs are placeholders), sets/overrides this host's entry, and writes a
+    single collapsed line at the first match's position. Returns
+    "added" | "updated" | "unchanged".
     """
-    existing_lines = (
-        env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    )
-    new_lines = []
-    found = False
-    status = "added"
+    old_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    new_lines: list[str] = []
+    anchor: int | None = None
+    leading = ""
+    had_active = False
+    host_to_path: dict[str, str] = {}
 
-    for line in existing_lines:
+    for line in old_text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("CLAUDE_CODE_SOURCES=") or stripped.startswith(
-            "#CLAUDE_CODE_SOURCES="
-        ):
-            found = True
-            # Re-parse value (strip leading '#' if commented out)
-            raw_value = stripped.split("=", 1)[1] if "=" in stripped else ""
-            pairs = parse_sources_string(raw_value)
-            host_to_path = {h: p for h, p in pairs}
-
-            if host_to_path.get(hostname) == archive_path and not stripped.startswith("#"):
-                status = "unchanged"
-                new_lines.append(line)
-                continue
-
-            host_to_path[hostname] = archive_path
-            new_pairs = [(h, host_to_path[h]) for h in host_to_path]
-            leading = line[:len(line) - len(line.lstrip())]
-            new_lines.append(f"{leading}CLAUDE_CODE_SOURCES={serialize_sources(new_pairs)}")
-            status = "updated" if not stripped.startswith("#") else "added"
-        else:
+        matches, is_commented = match_env_key(stripped, CLAUDE_CODE_SOURCES_ENV_KEY)
+        if not matches:
             new_lines.append(line)
+            continue
+        if not is_commented:
+            had_active = True
+            raw_value = stripped.split("=", 1)[1] if "=" in stripped else ""
+            host_to_path.update(parse_sources_string(raw_value))
+        if anchor is None:
+            anchor = len(new_lines)
+            leading = line[: len(line) - len(line.lstrip())]
+            new_lines.append("")  # reserved; filled after the loop
+        # any further matching line is a duplicate — drop it
 
-    if not found:
-        new_lines.append(f"CLAUDE_CODE_SOURCES={hostname}={archive_path}")
+    host_to_path[hostname] = archive_path
+    pairs = list(host_to_path.items())
+    if anchor is None:
+        new_lines.append(f"CLAUDE_CODE_SOURCES={serialize_sources(pairs)}")
+    else:
+        new_lines[anchor] = f"{leading}CLAUDE_CODE_SOURCES={serialize_sources(pairs)}"
 
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    return status
+    new_text = "\n".join(new_lines) + "\n"
+    env_path.write_text(new_text, encoding="utf-8")
+    return _diff_status(old_text, new_text, had_active)
 
 
 def _human_bytes(n: float) -> str:
