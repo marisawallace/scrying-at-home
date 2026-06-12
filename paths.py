@@ -352,3 +352,109 @@ def open_in_editor(*paths: Path) -> None:
         file=sys.stderr,
     )
     sys.exit(1)
+
+
+# --------------------------------------------------------------------------
+# Shell alias resolution
+#
+# Both setup.py and migration 002 print "here's how to run the search" hints.
+# We want those hints to show the user's own alias (e.g. `cs "query"`) when one
+# exists, instead of the verbose `python3 /abs/path/...py` form. The alias may
+# be one setup.py just created (passed in explicitly), or one already living in
+# the current shell's rc that we can detect by scanning.
+# --------------------------------------------------------------------------
+
+# Candidate dotfiles, in preference order, paired with the shell whose rc they
+# are (empty tag = shell-agnostic, e.g. ~/.profile). setup.py reuses this list
+# for its alias-writing flow; here it drives current-shell rc detection.
+CANDIDATE_DOTFILES = (
+    ("~/.bashrc", "bash"),
+    ("~/.bash_profile", "bash"),
+    ("~/.zshrc", "zsh"),
+    ("~/.profile", ""),
+    ("~/.config/fish/config.fish", "fish"),
+)
+
+
+def alias_in_dotfiles(
+    dotfile_texts: list[str], script_basename: str, flag: str = ""
+) -> str | None:
+    """Name of the first alias whose body invokes `script_basename` (+ `flag`).
+
+    Pure. Scans `alias NAME=...` lines for ones whose definition mentions the
+    script's basename (a substring of the absolute path the alias bakes in) and,
+    when given, the distinguishing `flag` (e.g. `--claude` vs `--chatgpt`).
+    Returns None if no alias matches.
+    """
+    needles = [script_basename] + ([flag] if flag else [])
+    for text in dotfile_texts:
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if not stripped.startswith("alias "):
+                continue
+            name, sep, value = stripped[len("alias "):].partition("=")
+            if not sep:
+                continue
+            if all(n in value for n in needles):
+                return name.strip()
+    return None
+
+
+def format_invocation(
+    script_path: Path, flag: str = "", alias: str | None = None
+) -> str:
+    """Display string for invoking `script_path`: the alias, or `python3 ...`.
+
+    Pure. When `alias` is given it is returned as-is — the alias already bakes
+    in any `flag`. Otherwise falls back to `python3 <path>[ flag]`. Never
+    appends a trailing user argument (e.g. a search query); the caller adds that
+    after this base command in whatever form it needs.
+    """
+    if alias:
+        return alias
+    return f"python3 {script_path} {flag}".rstrip()
+
+
+def current_shell_rc_texts(env: dict | None = None) -> list[str]:
+    """UTF-8 texts of the current shell's rc file(s), for alias detection.
+
+    Impure (reads $SHELL and the filesystem). Keeps candidate dotfiles whose
+    shell tag matches $SHELL's basename, plus shell-agnostic ones; when the
+    shell is unknown, reads them all. Missing / unreadable / non-UTF-8 files are
+    silently skipped — this only powers display sugar, never a correctness path.
+    """
+    env = os.environ if env is None else env
+    shell = Path((env.get("SHELL") or "").strip()).name
+    texts = []
+    for raw, tag in CANDIDATE_DOTFILES:
+        if shell and tag and tag != shell:
+            continue
+        try:
+            texts.append(Path(raw).expanduser().read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return texts
+
+
+def resolve_invocation(
+    script_path: Path,
+    flag: str = "",
+    *,
+    explicit_alias: str | None = None,
+    dotfile_texts: list[str] | None = None,
+) -> str:
+    """Best display command for `script_path`, preferring an alias.
+
+    Resolution order:
+      1. `explicit_alias` — an alias the caller knows about (e.g. one setup.py
+         just wrote). Trusted as-is.
+      2. an alias already defined in `dotfile_texts` (defaults to the current
+         shell's rc files) whose body invokes this script + `flag`.
+      3. `python3 <script_path>[ flag]` — the always-correct fallback.
+    """
+    if dotfile_texts is None:
+        dotfile_texts = current_shell_rc_texts()
+    alias = explicit_alias or alias_in_dotfiles(
+        dotfile_texts, script_path.name, flag
+    )
+    return format_invocation(script_path, flag, alias)

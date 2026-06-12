@@ -51,8 +51,9 @@ RESET = "\033[0m"
 _REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_REPO_ROOT))
 from paths import (  # noqa: E402
-    active_env_values,
-    load_env_file,
+    CANDIDATE_DOTFILES,
+    current_shell_rc_texts,
+    resolve_invocation,
     set_env_value,
 )
 
@@ -63,15 +64,8 @@ ENTRY_SCRIPTS = (
     "view_conversation.py",
 )
 
-# Candidate dotfiles, in preference order, paired with the shell whose rc
-# they are (used to bias the default toward the user's current $SHELL).
-CANDIDATE_DOTFILES = (
-    ("~/.bashrc", "bash"),
-    ("~/.bash_profile", "bash"),
-    ("~/.zshrc", "zsh"),
-    ("~/.profile", ""),
-    ("~/.config/fish/config.fish", "fish"),
-)
+# CANDIDATE_DOTFILES (the preference-ordered dotfile/shell pairs) lives in
+# paths.py so migration 002 can reuse it for current-shell alias detection.
 
 # Fallback names to suggest when the default "cs" conflicts.
 BACKUP_ALIAS_NAMES = ("csr", "cls", "csearch", "chats", "cax")
@@ -493,17 +487,24 @@ def _choose_alias_targets(
     return [by_label[label] for label in chosen] or [current]
 
 
-def step_aliases(repo_root: Path, yes: bool) -> None:
+def step_aliases(repo_root: Path, yes: bool) -> dict[str, str]:
+    """Run the alias step; return {label: alias_name} for aliases written.
+
+    The returned map (e.g. {"search": "cs", "sync-claude": "cs-sync-claude"})
+    lets later output — including the Claude Code migration we shell out to —
+    show the user's actual alias instead of the verbose `python3 ...` form.
+    Empty when no aliases were added this run.
+    """
     print(f"\n{BOLD}4. Shell aliases{RESET}")
     existing = _readable_dotfiles()
     if not existing:
         print(f"  {YELLOW}!{RESET} No usable dotfiles found — skipping aliases.")
         print(f"  {DIM}(Looked for: {', '.join(r for r, _ in CANDIDATE_DOTFILES)}){RESET}")
-        return
+        return {}
 
     if not (yes or _prompt_yn("  Add shell aliases?", default=True)):
         print(f"  {DIM}Skipped aliases.{RESET}")
-        return
+        return {}
 
     targets = _choose_alias_targets(existing, yes)
     all_texts = [text for _, _, text in existing]
@@ -535,7 +536,7 @@ def step_aliases(repo_root: Path, yes: bool) -> None:
 
     if not chosen:
         print(f"  {DIM}No aliases selected — skip.{RESET}")
-        return
+        return {}
     selected_lines = [label_to_line[label] for label in chosen]
 
     wrote_any = False
@@ -556,8 +557,19 @@ def step_aliases(repo_root: Path, yes: bool) -> None:
         print(f"  {GREEN}✓{RESET} Added alias(es) to {dotfile}")
         wrote_any = True
 
-    if wrote_any:
-        print(f"  {DIM}Run `source <dotfile>` or open a new shell to use them.{RESET}")
+    if not wrote_any:
+        # Either declined every write or the lines were already present; in the
+        # latter case the final-output resolver still finds them by scanning the
+        # rc, so reporting nothing here is fine.
+        return {}
+
+    print(f"  {DIM}Run `source <dotfile>` or open a new shell to use them.{RESET}")
+    alias_names = {
+        "search": name,
+        "sync-claude": f"{name}-sync-claude",
+        "sync-chatgpt": f"{name}-sync-chatgpt",
+    }
+    return {label: alias_names[label] for label in chosen}
 
 
 def step_editor(yes: bool) -> None:
@@ -605,7 +617,9 @@ def step_editor(yes: bool) -> None:
     print(f"  {DIM}Run `source {dotfile}` or open a new shell to apply.{RESET}")
 
 
-def step_claude_code_migration(repo_root: Path, yes: bool, claude_hooks: bool) -> bool:
+def step_claude_code_migration(
+    repo_root: Path, yes: bool, claude_hooks: bool, search_alias: str | None = None
+) -> bool:
     """Returns False only when the migration ran and failed."""
     print(f"\n{BOLD}6. Claude Code archival setup{RESET}")
     migration = repo_root / "migrations" / "002_setup_claude_code_archival.py"
@@ -627,6 +641,10 @@ def step_claude_code_migration(repo_root: Path, yes: bool, claude_hooks: bool) -
     cmd = [sys.executable, str(migration)]
     if yes:
         cmd.append("--yes")
+    if search_alias:
+        # So the migration's closing "verify it works" hint shows the alias we
+        # just wrote (e.g. `cs "query"`) instead of the verbose python3 form.
+        cmd += ["--search-alias", search_alias]
     print(f"  {DIM}Running: {' '.join(cmd)}{RESET}\n")
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -665,9 +683,11 @@ def main() -> None:
     step_chmod(repo_root)
     env_path = step_env_file(repo_root)
     step_zip_search_dir(env_path, args.yes)
-    step_aliases(repo_root, args.yes)
+    aliases = step_aliases(repo_root, args.yes)
     step_editor(args.yes)
-    migration_ok = step_claude_code_migration(repo_root, args.yes, args.claude_hooks)
+    migration_ok = step_claude_code_migration(
+        repo_root, args.yes, args.claude_hooks, aliases.get("search")
+    )
 
     print(f"\n{BOLD}{'=' * 60}{RESET}")
     if migration_ok:
@@ -675,16 +695,34 @@ def main() -> None:
     else:
         print(f"{RED}{BOLD}  Setup finished, but step 6 failed (see above).{RESET}")
     print(f"{BOLD}{'=' * 60}{RESET}")
+
+    # Show the user's own aliases when we know them — ones we just wrote
+    # (aliases dict) or, failing that, ones already in their current shell's rc.
+    # Otherwise fall back to the always-correct `python3 <path>` form.
+    rc_texts = current_shell_rc_texts()
+    search_cmd = resolve_invocation(
+        repo_root / "full_text_search_chats_archive.py",
+        explicit_alias=aliases.get("search"),
+        dotfile_texts=rc_texts,
+    )
+    sync_path = repo_root / "sync_local_chats_archive.py"
+    sync_claude_cmd = resolve_invocation(
+        sync_path, "--claude",
+        explicit_alias=aliases.get("sync-claude"), dotfile_texts=rc_texts,
+    )
+    sync_chatgpt_cmd = resolve_invocation(
+        sync_path, "--chatgpt",
+        explicit_alias=aliases.get("sync-chatgpt"), dotfile_texts=rc_texts,
+    )
     print(f"""
   Next steps:
     {BOLD}Search your chats:{RESET}
-      python3 {repo_root / 'full_text_search_chats_archive.py'} "some query"
-      (or your `cs`-style alias, once you've sourced your dotfile)
+      {search_cmd} "some query"
 
     {BOLD}Export + import chats:{RESET}
       See the "Export Your Chats" section of README.md. In short: download
       a claude.ai / chatgpt.com export .zip into your ZIP_SEARCH_DIR, then run
-      python3 {repo_root / 'sync_local_chats_archive.py'} --claude   (or --chatgpt)
+      {sync_claude_cmd}   (or {sync_chatgpt_cmd})
 
     {BOLD}Reminder:{RESET} if you added aliases or $EDITOR, `source` your dotfile
     or open a new shell before they take effect.

@@ -56,6 +56,7 @@ from paths import (  # noqa: E402
     normalize_hostname,
     parse_sources_string,
     resolve_data_dir,
+    resolve_invocation,
     set_env_value,
 )
 
@@ -207,6 +208,12 @@ def main():
         epilog=__doc__,
     )
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    parser.add_argument(
+        "--search-alias", default="",
+        help="Alias name for the search command (e.g. 'cs'), shown in the "
+             "closing 'verify it works' hint instead of the python3 form. "
+             "Normally passed by setup.py after it writes the alias.",
+    )
     args = parser.parse_args()
 
     print(f"\n{BOLD}{'=' * 60}{RESET}")
@@ -375,8 +382,7 @@ def main():
     if not args.yes:
         print(f"\n{YELLOW}This will modify {SETTINGS_PATH} and {env_path}.{RESET}")
         print(f"{YELLOW}Timestamped backups will be made before writing (*.bak.TIMESTAMP).{RESET}")
-        answer = input("Proceed? [y/N] ").strip().lower()
-        if answer not in ("y", "yes"):
+        if not _prompt_yn("Proceed?", default=True):
             print("Aborted.")
             sys.exit(0)
 
@@ -450,7 +456,14 @@ def main():
             f"\n{DIM}{projects_dir} does not exist yet — skipping backfill.{RESET}"
         )
 
-    # Done
+    # Done.
+    # Show the search hint with the user's alias when we can: one passed in by
+    # setup.py via --search-alias, else any alias already defined in the current
+    # shell's rc; otherwise the always-correct `python3 ...` form.
+    search_cmd = resolve_invocation(
+        Path("full_text_search_chats_archive.py"),
+        explicit_alias=args.search_alias or None,
+    )
     print(f"\n{BOLD}{'=' * 60}{RESET}")
     print(f"{GREEN}{BOLD}  Setup complete!{RESET}")
     print(f"{BOLD}{'=' * 60}{RESET}")
@@ -479,7 +492,7 @@ def main():
        sweep any existing history into the archive — that first sweep can be
        slow if your ~/.claude/projects/ tree is large, since it blocks
        Claude Code's exit.)
-    2. {CYAN}python3 full_text_search_chats_archive.py <some query>{RESET}
+    2. {CYAN}{search_cmd} <some query>{RESET}
        Results from this machine will be tagged with hostname {CYAN}{hostname}{RESET}.
 
   {BOLD}To uninstall:{RESET}
