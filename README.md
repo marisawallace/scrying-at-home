@@ -18,7 +18,7 @@ Terminal UI, hit enter to directly resume a chat. Will open your browser or `cd`
 - **Non-destructive**: preserves a chat even if you deleted it on the website. Export/sync the last 30 days only and it'll preserve your older chats. 
 - **Export backup**: automatic archive of your data export zipfiles
 - **UUID tracking**: Correctly handles conversation renames
-- **Simple**: just a folder of python scripts. Works with system python.
+- **Simple**: just a folder of python scripts. Works with system python. No install step.
 - **Completely offline**
 
 ## Setup
@@ -218,8 +218,8 @@ Interactive search accepts Home/End to jump to the first/last result, but the st
 
 ## Requirements
 
-- **Python**: 3.7 or higher
-- **Dependencies**: None (uses standard library only)
+- **Python**: 3.8+
+- **Dependencies**: vendored (prompt_toolkit, mistune, pygments, and wcwidth). No install step. Just run the scripts with system python!
 
 ## Testing
 
@@ -252,9 +252,4 @@ See [tests/README.md](tests/README.md) for detailed testing documentation, inclu
 
 ## Contributing
 
-This tool is designed to be extensible. To add support for a new provider:
-
-1. Create a new `Provider` subclass in `sync_local_chats_archive.py`
-2. Implement the required methods (`name()`, `find_exports()`, `extract_data()`, `validate()`)
-3. Add provider-specific URL generation to `SearchResult.get_provider_url()`
-4. Update documentation with export format details
+Extensibility is an explicit design goal. To add support for a new provider, create a new `Provider` subclass in `sync_local_chats_archive.py`.
