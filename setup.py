@@ -240,6 +240,14 @@ def _backup(path: Path) -> None:
         print(f"  {GREEN}✓{RESET} Backed up {path.name} → {backup.name}")
 
 
+def _tilde(path: Path) -> str:
+    """Display form of `path` with the home dir collapsed to `~` when possible."""
+    try:
+        return f"~/{path.relative_to(Path.home())}"
+    except ValueError:
+        return str(path)
+
+
 def _read_dotfile_text(path: Path) -> str | None:
     """Read a dotfile as UTF-8; None (with a warning) if it can't be decoded.
 
@@ -487,24 +495,25 @@ def _choose_alias_targets(
     return [by_label[label] for label in chosen] or [current]
 
 
-def step_aliases(repo_root: Path, yes: bool) -> dict[str, str]:
-    """Run the alias step; return {label: alias_name} for aliases written.
+def step_aliases(repo_root: Path, yes: bool) -> tuple[dict[str, str], list[Path]]:
+    """Run the alias step; return ({label: alias_name}, [dotfiles written]).
 
     The returned map (e.g. {"search": "cs", "sync-claude": "cs-sync-claude"})
     lets later output — including the Claude Code migration we shell out to —
     show the user's actual alias instead of the verbose `python3 ...` form.
-    Empty when no aliases were added this run.
+    The dotfile list lets the final summary tell the user which file to
+    `source`. Both are empty when no aliases were added this run.
     """
     print(f"\n{BOLD}4. Shell aliases{RESET}")
     existing = _readable_dotfiles()
     if not existing:
         print(f"  {YELLOW}!{RESET} No usable dotfiles found — skipping aliases.")
         print(f"  {DIM}(Looked for: {', '.join(r for r, _ in CANDIDATE_DOTFILES)}){RESET}")
-        return {}
+        return {}, []
 
     if not (yes or _prompt_yn("  Add shell aliases?", default=True)):
         print(f"  {DIM}Skipped aliases.{RESET}")
-        return {}
+        return {}, []
 
     targets = _choose_alias_targets(existing, yes)
     all_texts = [text for _, _, text in existing]
@@ -536,10 +545,10 @@ def step_aliases(repo_root: Path, yes: bool) -> dict[str, str]:
 
     if not chosen:
         print(f"  {DIM}No aliases selected — skip.{RESET}")
-        return {}
+        return {}, []
     selected_lines = [label_to_line[label] for label in chosen]
 
-    wrote_any = False
+    written: list[Path] = []
     for dotfile, _shell, _text in targets:
         dotfile_text = _read_dotfile_text(dotfile)
         if dotfile_text is None:
@@ -555,13 +564,13 @@ def step_aliases(repo_root: Path, yes: bool) -> dict[str, str]:
         with dotfile.open("a", encoding="utf-8") as f:
             f.write(append)
         print(f"  {GREEN}✓{RESET} Added alias(es) to {dotfile}")
-        wrote_any = True
+        written.append(dotfile)
 
-    if not wrote_any:
+    if not written:
         # Either declined every write or the lines were already present; in the
         # latter case the final-output resolver still finds them by scanning the
         # rc, so reporting nothing here is fine.
-        return {}
+        return {}, []
 
     print(f"  {DIM}Run `source <dotfile>` or open a new shell to use them.{RESET}")
     alias_names = {
@@ -569,7 +578,7 @@ def step_aliases(repo_root: Path, yes: bool) -> dict[str, str]:
         "sync-claude": f"{name}-sync-claude",
         "sync-chatgpt": f"{name}-sync-chatgpt",
     }
-    return {label: alias_names[label] for label in chosen}
+    return {label: alias_names[label] for label in chosen}, written
 
 
 def step_editor(yes: bool) -> None:
@@ -683,7 +692,7 @@ def main() -> None:
     step_chmod(repo_root)
     env_path = step_env_file(repo_root)
     step_zip_search_dir(env_path, args.yes)
-    aliases = step_aliases(repo_root, args.yes)
+    aliases, alias_dotfiles = step_aliases(repo_root, args.yes)
     step_editor(args.yes)
     migration_ok = step_claude_code_migration(
         repo_root, args.yes, args.claude_hooks, aliases.get("search")
@@ -714,18 +723,27 @@ def main() -> None:
         sync_path, "--chatgpt",
         explicit_alias=aliases.get("sync-chatgpt"), dotfile_texts=rc_texts,
     )
+    # Only show the "Load your aliases" step when we actually wrote a dotfile
+    # this run — otherwise there's nothing new to source.
+    if alias_dotfiles:
+        source_cmds = "\n".join(f"      source {_tilde(p)}" for p in alias_dotfiles)
+        load_block = f"""
+    {BOLD}Load your aliases:{RESET}
+{source_cmds}
+"""
+    else:
+        load_block = ""
+
     print(f"""
   Next steps:
+{load_block}
     {BOLD}Search your chats:{RESET}
       {search_cmd} "some query"
 
     {BOLD}Export + import chats:{RESET}
-      See the "Export Your Chats" section of README.md. In short: download
+      See "Export Your Chats" in README.md. In short: download
       a claude.ai / chatgpt.com export .zip into your ZIP_SEARCH_DIR, then run
       {sync_claude_cmd}   (or {sync_chatgpt_cmd})
-
-    {BOLD}Reminder:{RESET} if you added aliases or $EDITOR, `source` your dotfile
-    or open a new shell before they take effect.
 """)
     if not migration_ok:
         sys.exit(1)
