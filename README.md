@@ -44,12 +44,9 @@ python3 migrations/002_setup_claude_code_archival.py
 I highly recommend adding aliases to your `.bashrc` or equivalent:
 
 ```
-alias ccs="cd $CODE_HOME/clauding-at-home/"
 alias cs="python3 $CODE_HOME/clauding-at-home/full_text_search_chats_archive.py"
-alias csscl="python3 $CODE_HOME/clauding-at-home/sync_local_chats_archive.py --claude"
-alias cssch="python3 $CODE_HOME/clauding-at-home/sync_local_chats_archive.py --chatgpt"
-alias csv="python3 $CODE_HOME/clauding-at-home/view_conversation.py"
-alias csvh="python3 $CODE_HOME/clauding-at-home/view_conversation.py --format html"
+alias cs-sync-claude="python3 $CODE_HOME/clauding-at-home/sync_local_chats_archive.py --claude"
+alias cs-sync-chatgpt="python3 $CODE_HOME/clauding-at-home/sync_local_chats_archive.py --chatgpt"
 ```
 
 Make sure you have $EDITOR set.
