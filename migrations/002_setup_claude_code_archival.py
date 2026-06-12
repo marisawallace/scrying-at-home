@@ -51,10 +51,12 @@ sys.path.insert(0, str(_REPO_ROOT))
 from paths import (  # noqa: E402
     CLAUDE_CODE_HOST_ENV_KEY,
     CLAUDE_CODE_SOURCES_ENV_KEY,
+    active_env_values,
     load_env_file,
     normalize_hostname,
     parse_sources_string,
     resolve_data_dir,
+    set_env_value,
 )
 
 
@@ -102,114 +104,33 @@ def serialize_sources(pairs: list[tuple[str, str]]) -> str:
     return ",".join(f"{h}={p}" for h, p in pairs)
 
 
-def match_env_key(stripped_line: str, key: str) -> tuple[bool, bool]:
-    """Classify a (whitespace-stripped) .env line against `key`.
+def merged_source_pairs(env_text: str) -> dict[str, str]:
+    """Merge host→path pairs from every *active* CLAUDE_CODE_SOURCES line.
 
-    Returns (matches, is_commented). A line matches if, after dropping any
-    leading `#` characters and surrounding whitespace, it reads `key=...`.
-    This recognizes both the active form (`KEY=value`) and the commented
-    documentation forms shipped in .env.example — `#KEY=value` *and*
-    `# KEY=value` (space after the hash) — so the migration edits the example
-    lines in place instead of appending duplicates beneath them. Pure comment
-    lines (`#`, `# some prose`) don't start with `key=` and so don't match.
+    Stale duplicate lines (e.g. left behind by an older version of this
+    migration) are all consulted, later lines winning per key — matching
+    load_env_file's last-assignment-wins — so an entry shadowed by a
+    duplicate still reaches the collision guard instead of being silently
+    dropped on rewrite. Commented .env.example lines contribute nothing;
+    their laptop=/desktop= pairs are placeholders. Raises ValueError on a
+    malformed entry.
     """
-    is_commented = stripped_line.startswith("#")
-    body = stripped_line.lstrip("#").strip()
-    return body.startswith(f"{key}="), is_commented
+    pairs: dict[str, str] = {}
+    for raw_value in active_env_values(env_text, CLAUDE_CODE_SOURCES_ENV_KEY):
+        pairs.update(parse_sources_string(raw_value))
+    return pairs
 
 
-def _diff_status(old_text: str, new_text: str, had_active: bool) -> str:
-    """Classify the effect of a rewrite for console reporting.
+def planned_env_text(env_text: str, hostname: str, sources_value: str) -> str:
+    """Pure: the .env text after setting CLAUDE_CODE_HOST and CLAUDE_CODE_SOURCES.
 
-    "unchanged" when nothing moved; "updated" when an active line already
-    existed and was rewritten; "added" when the key was newly created or
-    only commented documentation existed before (now activated).
+    Each key collapses to a single active line (set_env_value), so comparing
+    the result against the current text answers both "does .env need a
+    write?" and "are there stale duplicate/commented lines to normalize?"
+    with one check.
     """
-    if new_text == old_text:
-        return "unchanged"
-    return "updated" if had_active else "added"
-
-
-def upsert_env_scalar(env_path: Path, key: str, value: str) -> str:
-    """Add or update a scalar KEY=VALUE in env_path.
-
-    Collapses *every* line that sets `key` — active or commented-out
-    documentation, however many — into a single active `key=value` line at
-    the position of the first such line, dropping the rest. This keeps a
-    re-run from leaving a duplicate when an active line and a commented
-    .env.example line coexist. Returns "added" | "updated" | "unchanged".
-    """
-    old_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    new_lines: list[str] = []
-    anchor: int | None = None
-    leading = ""
-    had_active = False
-
-    for line in old_text.splitlines():
-        matches, is_commented = match_env_key(line.strip(), key)
-        if not matches:
-            new_lines.append(line)
-            continue
-        had_active = had_active or not is_commented
-        if anchor is None:
-            anchor = len(new_lines)
-            leading = line[: len(line) - len(line.lstrip())]
-            new_lines.append("")  # reserved; filled after the loop
-        # any further matching line is a duplicate — drop it
-
-    if anchor is None:
-        new_lines.append(f"{key}={value}")
-    else:
-        new_lines[anchor] = f"{leading}{key}={value}"
-
-    new_text = "\n".join(new_lines) + "\n"
-    env_path.write_text(new_text, encoding="utf-8")
-    return _diff_status(old_text, new_text, had_active)
-
-
-def upsert_env_sources(env_path: Path, hostname: str, archive_path: str) -> str:
-    """
-    Add or update the entry for hostname in CLAUDE_CODE_SOURCES.
-
-    Merges the host→path pairs from every *active* CLAUDE_CODE_SOURCES line
-    (commented .env.example lines contribute nothing — their laptop=/desktop=
-    pairs are placeholders), sets/overrides this host's entry, and writes a
-    single collapsed line at the first match's position. Returns
-    "added" | "updated" | "unchanged".
-    """
-    old_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    new_lines: list[str] = []
-    anchor: int | None = None
-    leading = ""
-    had_active = False
-    host_to_path: dict[str, str] = {}
-
-    for line in old_text.splitlines():
-        stripped = line.strip()
-        matches, is_commented = match_env_key(stripped, CLAUDE_CODE_SOURCES_ENV_KEY)
-        if not matches:
-            new_lines.append(line)
-            continue
-        if not is_commented:
-            had_active = True
-            raw_value = stripped.split("=", 1)[1] if "=" in stripped else ""
-            host_to_path.update(parse_sources_string(raw_value))
-        if anchor is None:
-            anchor = len(new_lines)
-            leading = line[: len(line) - len(line.lstrip())]
-            new_lines.append("")  # reserved; filled after the loop
-        # any further matching line is a duplicate — drop it
-
-    host_to_path[hostname] = archive_path
-    pairs = list(host_to_path.items())
-    if anchor is None:
-        new_lines.append(f"CLAUDE_CODE_SOURCES={serialize_sources(pairs)}")
-    else:
-        new_lines[anchor] = f"{leading}CLAUDE_CODE_SOURCES={serialize_sources(pairs)}"
-
-    new_text = "\n".join(new_lines) + "\n"
-    env_path.write_text(new_text, encoding="utf-8")
-    return _diff_status(old_text, new_text, had_active)
+    text = set_env_value(env_text, CLAUDE_CODE_HOST_ENV_KEY, hostname)
+    return set_env_value(text, CLAUDE_CODE_SOURCES_ENV_KEY, sources_value)
 
 
 def _human_bytes(n: float) -> str:
@@ -299,6 +220,7 @@ def main():
         sys.exit(1)
 
     env_path = repo_root / ".env"
+    env_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     existing_env = load_env_file(env_path)
 
     # Resolve the human-readable host name. Prefer an existing CLAUDE_CODE_HOST
@@ -361,10 +283,13 @@ def main():
         print(f"  {GREEN}+{RESET} Add SessionEnd hook → {command}")
 
     # Compute env change preview without writing
-    existing_pairs = dict(
-        parse_sources_string(existing_env.get(CLAUDE_CODE_SOURCES_ENV_KEY, ""))
-    )
-    raw_existing = existing_env.get(CLAUDE_CODE_SOURCES_ENV_KEY, "")
+    try:
+        existing_pairs = merged_source_pairs(env_text)
+    except ValueError as e:
+        print(f"\n{RED}ERROR: {env_path} has a malformed {CLAUDE_CODE_SOURCES_ENV_KEY} line.{RESET}")
+        print(f"  {e}")
+        print("  Fix it manually before re-running this migration.")
+        sys.exit(1)
 
     # Collision guard: another machine already registered this hostname with
     # a different archive path. Common when default macOS hostnames like
@@ -402,7 +327,7 @@ def main():
             f"  {YELLOW}~{RESET} .env CLAUDE_CODE_SOURCES[{hostname}]: "
             f"{existing_pairs[hostname]} → {archive_dir}"
         )
-    elif raw_existing:
+    elif existing_pairs:
         env_action = "append"
         print(f"  {GREEN}+{RESET} .env CLAUDE_CODE_SOURCES: append {hostname}={archive_dir}")
     else:
@@ -421,18 +346,29 @@ def main():
         host_action = "add"
         print(f"  {GREEN}+{RESET} .env CLAUDE_CODE_HOST={hostname}")
 
+    # The authoritative "does .env need a write?" check compares the planned
+    # rewritten text against what's on disk, not just the parsed values — so
+    # stale duplicate or leftover commented lines are normalized even when
+    # every value already matches (the parsed view can't see them).
+    new_pairs = dict(existing_pairs)
+    new_pairs[hostname] = str(archive_dir)
+    new_env_text = planned_env_text(
+        env_text, hostname, serialize_sources(list(new_pairs.items()))
+    )
+    env_write_needed = new_env_text != env_text
+    if env_write_needed and env_action == "unchanged" and host_action == "unchanged":
+        print(
+            f"  {YELLOW}~{RESET} .env: normalize stale duplicate/commented-out "
+            f"lines (values unchanged)"
+        )
+
     archive_dir_exists = archive_dir.exists()
     if archive_dir_exists:
         print(f"  {DIM}Archive dir already exists — skip mkdir{RESET}")
     else:
         print(f"  {GREEN}+{RESET} mkdir -p {archive_dir}")
 
-    if (
-        not settings_changes_needed
-        and env_action == "unchanged"
-        and host_action == "unchanged"
-        and archive_dir_exists
-    ):
+    if not settings_changes_needed and not env_write_needed and archive_dir_exists:
         print(f"\n{GREEN}✓ Already installed — nothing to do.{RESET}\n")
         sys.exit(0)
 
@@ -462,20 +398,18 @@ def main():
         SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
         print(f"  {GREEN}✓{RESET} Updated {SETTINGS_PATH}")
 
-    # 2. .env
-    if env_action != "unchanged" or host_action != "unchanged":
-        env_path.touch(exist_ok=True)
+    # 2. .env — single write of the text already planned (and shown) above
+    if env_write_needed:
         if env_path.exists() and env_path.stat().st_size > 0:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             backup = env_path.with_suffix(f".bak.{ts}")
             backup.write_text(env_path.read_text())
             print(f"  {GREEN}✓{RESET} Backed up .env → {backup.name}")
-    if host_action != "unchanged":
-        result = upsert_env_scalar(env_path, CLAUDE_CODE_HOST_ENV_KEY, hostname)
-        print(f"  {GREEN}✓{RESET} .env CLAUDE_CODE_HOST: {result}")
-    if env_action != "unchanged":
-        result = upsert_env_sources(env_path, hostname, str(archive_dir))
-        print(f"  {GREEN}✓{RESET} .env CLAUDE_CODE_SOURCES: {result}")
+        env_path.write_text(new_env_text, encoding="utf-8")
+        print(
+            f"  {GREEN}✓{RESET} Updated .env "
+            f"(CLAUDE_CODE_HOST: {host_action}, CLAUDE_CODE_SOURCES: {env_action})"
+        )
 
     # 3. archive dir
     if not archive_dir_exists:

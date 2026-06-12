@@ -63,33 +63,107 @@ CLAUDE_CODE_SOURCES_ENV_KEY = "CLAUDE_CODE_SOURCES"
 CLAUDE_CODE_HOST_ENV_KEY = "CLAUDE_CODE_HOST"
 
 
-def load_env_file(path: Path) -> dict:
-    """Parse a simple .env file into a dict.
+def parse_env_assignment(line: str) -> tuple[str, str, bool] | None:
+    """Parse one raw .env line as a KEY=VALUE assignment, active or commented.
 
-    - utf-8
-    - blank lines and lines starting with '#' are ignored
-    - inline trailing '#' comments are stripped only when preceded by whitespace
-      (so a literal '#' inside an unquoted value still works as long as it isn't
-      preceded by whitespace)
+    Returns (key, value, is_commented), or None when the line is not an
+    assignment (blank, or no '='). Commented forms — `#KEY=value` and
+    `# KEY=value` — are recognized so migrations can find and activate
+    .env.example documentation lines in place. Prose comments that happen to
+    contain '=' parse to a key nobody looks up, so they are harmless.
+
+    This is the single source of truth for .env line semantics; anything that
+    reads or rewrites .env lines (load_env_file, the migrations' upserts) must
+    go through it so they can't disagree on what a line means:
+    - whitespace around '=' is tolerated
+    - inline trailing '#' comments are stripped only when preceded by
+      whitespace (so a literal '#' inside an unquoted value still works as
+      long as it isn't preceded by whitespace)
     - matching surrounding single or double quotes are stripped from the value
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+    is_commented = stripped.startswith("#")
+    body = stripped.lstrip("#").strip() if is_commented else stripped
+    if "=" not in body:
+        return None
+    key, value = body.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+    m = re.search(r"\s+#", value)
+    if m:
+        value = value[: m.start()].rstrip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return key, value, is_commented
+
+
+def load_env_file(path: Path) -> dict:
+    """Parse a simple .env file (utf-8) into a dict.
+
+    Active assignments only; line semantics per parse_env_assignment. When a
+    key is assigned more than once, the last assignment wins.
     """
     config: dict = {}
     if not path.exists():
         return config
     for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        parsed = parse_env_assignment(raw)
+        if parsed is None:
             continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        m = re.search(r"\s+#", value)
-        if m:
-            value = value[: m.start()].rstrip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
+        key, value, is_commented = parsed
+        if is_commented:
+            continue
         config[key] = value
     return config
+
+
+def active_env_values(text: str, key: str) -> list[str]:
+    """Return the value of every *active* line assigning `key`, in file order.
+
+    Unlike load_env_file (last assignment wins), this exposes all assignments
+    so callers that merge multi-valued keys (CLAUDE_CODE_SOURCES) can see
+    entries that a stale duplicate line would otherwise shadow.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        parsed = parse_env_assignment(line)
+        if parsed is not None and parsed[0] == key and not parsed[2]:
+            out.append(parsed[1])
+    return out
+
+
+def set_env_value(text: str, key: str, value: str) -> str:
+    """Pure rewrite of .env text setting `key` to `value`.
+
+    Collapses every line assigning `key` — active or commented-out
+    documentation, however many — into a single active `key=value` line at
+    the first such line's position (preserving its indentation), dropping the
+    rest. Appends at the end when no line assigns the key. The value is
+    quoted if it would otherwise be truncated by inline-comment stripping on
+    the next read.
+    """
+    if re.search(r"\s+#", value):
+        value = f'"{value}"'
+    new_lines: list[str] = []
+    anchor: int | None = None
+    leading = ""
+    for line in text.splitlines():
+        parsed = parse_env_assignment(line)
+        if parsed is None or parsed[0] != key:
+            new_lines.append(line)
+            continue
+        if anchor is None:
+            anchor = len(new_lines)
+            leading = line[: len(line) - len(line.lstrip())]
+            new_lines.append("")  # reserved; filled below
+        # any further line assigning the key is a duplicate — drop it
+    if anchor is None:
+        new_lines.append(f"{key}={value}")
+    else:
+        new_lines[anchor] = f"{leading}{key}={value}"
+    return "\n".join(new_lines) + "\n"
 
 
 def _resolve_dir(
