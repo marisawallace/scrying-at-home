@@ -2,16 +2,14 @@
 Integration tests for Claude Code view functionality.
 """
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture
-def claude_code_workspace(isolated_workspace, repo_root):
-    """Set up a workspace with Claude Code JSONL data and swap .env."""
+def claude_code_workspace(isolated_workspace):
+    """Set up a workspace with Claude Code JSONL data and a workspace-local .env."""
     cc_dir = isolated_workspace / "claude_code_data"
     project_dir = cc_dir / "-home-testuser-projects-my-app"
     project_dir.mkdir(parents=True)
@@ -19,37 +17,23 @@ def claude_code_workspace(isolated_workspace, repo_root):
     fixture = Path(__file__).parent.parent / "fixtures" / "sample_claude_code_session.jsonl"
     shutil.copy(fixture, project_dir / "cc-test-session-001.jsonl")
 
-    # Temporarily replace repo .env
-    repo_env = repo_root / ".env"
-    backup_env = repo_root / ".env.backup"
-    if repo_env.exists():
-        shutil.copy(repo_env, backup_env)
-
     env_content = (
         f"CLAUDE_CODE_SOURCES=testhost={cc_dir}\n"
         f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
         f"SEARCH_INDEX_DB={isolated_workspace / 'search_index.db'}\n"
     )
-    repo_env.write_text(env_content)
+    (isolated_workspace / ".env").write_text(env_content)
 
-    yield isolated_workspace
-
-    # Restore original .env
-    if backup_env.exists():
-        shutil.move(backup_env, repo_env)
-    else:
-        repo_env.unlink(missing_ok=True)
+    return isolated_workspace
 
 
 @pytest.mark.integration
-def test_view_claude_code_session(claude_code_workspace, repo_root):
+def test_view_claude_code_session(claude_code_workspace, run_cli):
     """View a Claude Code session by session ID generates markdown."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "cc-test-session-001", "--no-open"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "view_conversation.py", "cc-test-session-001", "--no-open",
+        config=claude_code_workspace / ".env",
     )
 
     print(f"\nSTDOUT:\n{result.stdout}")
@@ -61,13 +45,11 @@ def test_view_claude_code_session(claude_code_workspace, repo_root):
 
 
 @pytest.mark.integration
-def test_view_output_path(claude_code_workspace, repo_root):
+def test_view_output_path(claude_code_workspace, run_cli):
     """View output goes to local_views/claude-code/ directory."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "cc-test-session-001", "--no-open"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "view_conversation.py", "cc-test-session-001", "--no-open",
+        config=claude_code_workspace / ".env",
     )
 
     assert result.returncode == 0
@@ -82,13 +64,11 @@ def test_view_output_path(claude_code_workspace, repo_root):
 
 
 @pytest.mark.integration
-def test_view_markdown_content(claude_code_workspace, repo_root):
+def test_view_markdown_content(claude_code_workspace, run_cli):
     """Generated markdown includes expected sections."""
-    subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "cc-test-session-001", "--no-open"],
-        capture_output=True,
-        text=True
+    run_cli(
+        "view_conversation.py", "cc-test-session-001", "--no-open",
+        config=claude_code_workspace / ".env",
     )
 
     md_path = claude_code_workspace / "data" / "local_views" / "claude-code" / "cc-test-session-001.md"
@@ -113,13 +93,11 @@ def test_view_markdown_content(claude_code_workspace, repo_root):
 
 
 @pytest.mark.integration
-def test_view_not_found(claude_code_workspace, repo_root):
+def test_view_not_found(claude_code_workspace, run_cli):
     """View with unknown session ID fails gracefully."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "nonexistent-session-id", "--no-open"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "view_conversation.py", "nonexistent-session-id", "--no-open",
+        config=claude_code_workspace / ".env",
     )
 
     assert result.returncode != 0

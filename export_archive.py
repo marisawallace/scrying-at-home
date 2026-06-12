@@ -31,7 +31,7 @@ from datetime import date
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
-from paths import load_env_file, parse_claude_code_sources, resolve_data_dir
+from paths import load_env_file, parse_claude_code_sources, resolve_data_dir, resolve_env_path
 from full_text_search_chats_archive import (
     SearchResult,
     search_archive,
@@ -200,10 +200,18 @@ Examples:
         "--dry-run", action="store_true",
         help="Show what would be exported without writing files",
     )
+    parser.add_argument(
+        "--config", metavar="PATH", default=None,
+        help="Path to the .env config file (default: alongside this script)",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent.resolve()
-    config = load_env_file(script_dir / ".env")
+    env_path = resolve_env_path(script_dir, args.config)
+    if args.config and not env_path.is_file():
+        print(f"Error: --config file not found: {env_path}", file=sys.stderr)
+        sys.exit(1)
+    config = load_env_file(env_path)
 
     results = gather_results(config, args.source)
     if not results:

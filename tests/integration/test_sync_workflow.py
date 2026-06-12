@@ -5,26 +5,21 @@ These tests exercise the full sync pipeline with real filesystem operations.
 """
 import json
 import shutil
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
 
 @pytest.mark.integration
-def test_fresh_claude_import(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_fresh_claude_import(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test importing Claude conversations into an empty archive."""
     # Setup: Copy export zip to workspace
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
     # Execute: Run sync script
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     # Debug output
@@ -74,7 +69,7 @@ def test_fresh_claude_import(isolated_workspace, sample_claude_export, repo_root
 
 
 @pytest.mark.integration
-def test_conversation_update(prepopulated_archive, sample_claude_export, repo_root, test_env_file):
+def test_conversation_update(prepopulated_archive, sample_claude_export, run_cli, test_env_file):
     """Test updating an existing conversation with same UUID."""
     # Setup: Workspace already has old version of conv-uuid-001
     workspace = prepopulated_archive
@@ -92,11 +87,9 @@ def test_conversation_update(prepopulated_archive, sample_claude_export, repo_ro
     shutil.copy(sample_claude_export, zip_dest)
 
     # Execute: Run sync script
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=workspace,
     )
 
     print(f"\nSTDOUT:\n{result.stdout}")
@@ -123,7 +116,7 @@ def test_conversation_update(prepopulated_archive, sample_claude_export, repo_ro
 
 
 @pytest.mark.integration
-def test_chatgpt_import(isolated_workspace, sample_chatgpt_export, test_env_file, repo_root):
+def test_chatgpt_import(isolated_workspace, sample_chatgpt_export, test_env_file, run_cli):
     """Test importing ChatGPT conversations with .env configuration."""
     # Setup: Copy export zip
     zip_dest = isolated_workspace / sample_chatgpt_export.name
@@ -133,11 +126,9 @@ def test_chatgpt_import(isolated_workspace, sample_chatgpt_export, test_env_file
     assert test_env_file.exists(), ".env file not created"
 
     # Execute: Run sync script
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--chatgpt"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "sync_local_chats_archive.py", "--chatgpt",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nSTDOUT:\n{result.stdout}")
@@ -160,18 +151,16 @@ def test_chatgpt_import(isolated_workspace, sample_chatgpt_export, test_env_file
 
 
 @pytest.mark.integration
-def test_filename_collision_handling(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_filename_collision_handling(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test that filename collisions are resolved with numeric suffixes."""
     # Setup: Copy export zip
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
     # Run sync once
-    result1 = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result1 = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert result1.returncode == 0
 
@@ -192,11 +181,9 @@ def test_filename_collision_handling(isolated_workspace, sample_claude_export, r
     duplicate_path.write_text(json.dumps(duplicate_conv, indent=2))
 
     # Run sync again (should not overwrite the duplicate)
-    result2 = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result2 = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nSecond sync STDOUT:\n{result2.stdout}")
@@ -212,7 +199,7 @@ def test_filename_collision_handling(isolated_workspace, sample_claude_export, r
 
 
 @pytest.mark.integration
-def test_multiple_syncs_idempotent(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_multiple_syncs_idempotent(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test that running sync multiple times with same data is idempotent."""
     # Setup
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
@@ -225,11 +212,9 @@ def test_multiple_syncs_idempotent(isolated_workspace, sample_claude_export, rep
             archived = isolated_workspace / "data/archived_exports/claude/claude-test@example.com/data-2025-01-05.zip"
             shutil.copy(archived, zip_dest)
 
-        result = subprocess.run(
-            [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-            cwd=isolated_workspace,
-            capture_output=True,
-            text=True
+        result = run_cli(
+            "sync_local_chats_archive.py", "--claude",
+            config=test_env_file, cwd=isolated_workspace,
         )
         assert result.returncode == 0, f"Sync {i+1} failed"
 

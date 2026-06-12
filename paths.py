@@ -119,6 +119,20 @@ def load_env_file(path: Path) -> dict:
     return config
 
 
+def resolve_env_path(script_dir: Path, config_arg: str | None) -> Path:
+    """Resolve which .env file to load.
+
+    With an explicit --config value, use it (expanduser, relative to cwd).
+    Otherwise fall back to the script-local default, unchanged behavior.
+
+    Validation (erroring on an explicit-but-missing path) belongs in the
+    imperative shell of each entry point, not here, so this stays pure.
+    """
+    if config_arg:
+        return Path(config_arg).expanduser()
+    return script_dir / ".env"
+
+
 def active_env_values(text: str, key: str) -> list[str]:
     """Return the value of every *active* line assigning `key`, in file order.
 

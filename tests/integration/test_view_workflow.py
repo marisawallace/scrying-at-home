@@ -5,34 +5,26 @@ These tests exercise conversation viewing and format conversion.
 """
 import json
 import shutil
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
 
-def _import_export(isolated_workspace, sample_claude_export, repo_root):
+def _import_export(isolated_workspace, sample_claude_export, run_cli, config):
     """Copy the sample export into the workspace and run the sync script."""
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=config, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
 
-def _view(isolated_workspace, repo_root, uuid):
+def _view(isolated_workspace, run_cli, config, uuid):
     """Run view_conversation.py for a UUID in markdown mode without opening it."""
-    return subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         uuid, "--format", "markdown", "--no-open"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    return run_cli(
+        "view_conversation.py", uuid, "--format", "markdown", "--no-open",
+        config=config, cwd=isolated_workspace,
     )
 
 
@@ -60,27 +52,22 @@ def _append_message(isolated_workspace, uuid, text, sender="assistant"):
 
 
 @pytest.mark.integration
-def test_view_markdown_format(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_markdown_format(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test viewing a conversation in Markdown format."""
     # Setup: Import conversations first
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: View conversation in markdown (without opening editor)
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "conv-uuid-001", "--format", "markdown", "--no-open"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "view_conversation.py", "conv-uuid-001", "--format", "markdown", "--no-open",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nView STDOUT:\n{result.stdout}")
@@ -102,27 +89,22 @@ def test_view_markdown_format(isolated_workspace, sample_claude_export, repo_roo
 
 
 @pytest.mark.integration
-def test_view_html_format(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_html_format(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test viewing a conversation in HTML format."""
     # Setup: Import conversations
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: View conversation in HTML format (without opening browser)
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "conv-uuid-002", "--format", "html", "--no-open"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "view_conversation.py", "conv-uuid-002", "--format", "html", "--no-open",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nView HTML STDOUT:\n{result.stdout}")
@@ -162,27 +144,22 @@ def test_view_html_format(isolated_workspace, sample_claude_export, repo_root, t
 
 
 @pytest.mark.integration
-def test_view_nonexistent_conversation(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_nonexistent_conversation(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test viewing a conversation that doesn't exist."""
     # Setup: Import conversations
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: Try to view non-existent conversation
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "nonexistent-uuid-999", "--no-open"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "view_conversation.py", "nonexistent-uuid-999", "--no-open",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nNonexistent conversation output:\n{result.stdout}\n{result.stderr}")
@@ -193,27 +170,22 @@ def test_view_nonexistent_conversation(isolated_workspace, sample_claude_export,
 
 
 @pytest.mark.integration
-def test_view_caching(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_caching(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test that viewing the same conversation twice reuses cached file."""
     # Setup: Import conversations
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: View conversation first time
-    result1 = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "conv-uuid-001", "--format", "markdown", "--no-open"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result1 = run_cli(
+        "view_conversation.py", "conv-uuid-001", "--format", "markdown", "--no-open",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert result1.returncode == 0
 
@@ -222,12 +194,9 @@ def test_view_caching(isolated_workspace, sample_claude_export, repo_root, test_
     first_mtime = md_file.stat().st_mtime
 
     # Execute: View same conversation again
-    result2 = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "conv-uuid-001", "--format", "markdown", "--no-open"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result2 = run_cli(
+        "view_conversation.py", "conv-uuid-001", "--format", "markdown", "--no-open",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert result2.returncode == 0
 
@@ -237,16 +206,16 @@ def test_view_caching(isolated_workspace, sample_claude_export, repo_root, test_
 
 
 @pytest.mark.integration
-def test_view_refresh_stale(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_refresh_stale(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """A cached markdown is refreshed when the conversation gained new messages."""
-    _import_export(isolated_workspace, sample_claude_export, repo_root)
+    _import_export(isolated_workspace, sample_claude_export, run_cli, test_env_file)
 
-    assert _view(isolated_workspace, repo_root, "conv-uuid-001").returncode == 0
+    assert _view(isolated_workspace, run_cli, test_env_file, "conv-uuid-001").returncode == 0
 
     new_text = "This is a freshly appended assistant reply."
     _append_message(isolated_workspace, "conv-uuid-001", new_text)
 
-    result = _view(isolated_workspace, repo_root, "conv-uuid-001")
+    result = _view(isolated_workspace, run_cli, test_env_file, "conv-uuid-001")
     print(f"\nRefresh STDOUT:\n{result.stdout}")
     assert result.returncode == 0
     assert "refreshed" in result.stdout.lower()
@@ -256,11 +225,11 @@ def test_view_refresh_stale(isolated_workspace, sample_claude_export, repo_root,
 
 
 @pytest.mark.integration
-def test_view_preserves_edits(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_preserves_edits(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """A hand-edited markdown is left untouched even when the conversation grew."""
-    _import_export(isolated_workspace, sample_claude_export, repo_root)
+    _import_export(isolated_workspace, sample_claude_export, run_cli, test_env_file)
 
-    assert _view(isolated_workspace, repo_root, "conv-uuid-001").returncode == 0
+    assert _view(isolated_workspace, run_cli, test_env_file, "conv-uuid-001").returncode == 0
 
     md_file = isolated_workspace / "data/local_views/claude/conv-uuid-001.md"
     marker = "LOCAL EDIT MARKER — do not clobber"
@@ -269,7 +238,7 @@ def test_view_preserves_edits(isolated_workspace, sample_claude_export, repo_roo
     new_text = "This appended reply must NOT reach the edited file."
     _append_message(isolated_workspace, "conv-uuid-001", new_text)
 
-    result = _view(isolated_workspace, repo_root, "conv-uuid-001")
+    result = _view(isolated_workspace, run_cli, test_env_file, "conv-uuid-001")
     print(f"\nPreserve-edits STDOUT:\n{result.stdout}")
     assert result.returncode == 0
     assert "local edits" in result.stdout.lower()
@@ -280,42 +249,37 @@ def test_view_preserves_edits(isolated_workspace, sample_claude_export, repo_roo
 
 
 @pytest.mark.integration
-def test_view_current_no_rewrite(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_current_no_rewrite(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Viewing an unchanged conversation reports it up to date and does not rewrite."""
-    _import_export(isolated_workspace, sample_claude_export, repo_root)
+    _import_export(isolated_workspace, sample_claude_export, run_cli, test_env_file)
 
-    assert _view(isolated_workspace, repo_root, "conv-uuid-001").returncode == 0
+    assert _view(isolated_workspace, run_cli, test_env_file, "conv-uuid-001").returncode == 0
     md_file = isolated_workspace / "data/local_views/claude/conv-uuid-001.md"
     first_mtime = md_file.stat().st_mtime
 
-    result = _view(isolated_workspace, repo_root, "conv-uuid-001")
+    result = _view(isolated_workspace, run_cli, test_env_file, "conv-uuid-001")
     assert result.returncode == 0
     assert "up to date" in result.stdout.lower()
     assert md_file.stat().st_mtime == first_mtime, "File should not be rewritten"
 
 
 @pytest.mark.integration
-def test_view_project(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_view_project(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test viewing a Claude project."""
     # Setup: Import conversations and projects
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: View project
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "view_conversation.py"),
-         "proj-uuid-001", "--format", "markdown", "--no-open"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "view_conversation.py", "proj-uuid-001", "--format", "markdown", "--no-open",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nView project STDOUT:\n{result.stdout}")

@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from paths import resolve_data_dir, resolve_local_views_dir, parse_claude_code_sources
+from paths import resolve_data_dir, resolve_local_views_dir, parse_claude_code_sources, resolve_env_path, load_env_file
 
 CLAUDE_CHAT_URL_PREFIX = "https://claude.ai/chat/"
 
@@ -656,22 +656,24 @@ Examples:
         help="Don't open the file, just generate it"
     )
 
+    parser.add_argument(
+        "--config", metavar="PATH", default=None,
+        help="Path to the .env config file (default: alongside this script)",
+    )
+
     args = parser.parse_args()
     args.uuid = extract_uuid(args.uuid)
 
     # Get directories
     script_dir = Path(__file__).parent.resolve()
 
-    # Load configuration from .env
-    config = {}
-    env_file = script_dir / ".env"
-    if env_file.exists():
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    config[key.strip()] = value.strip()
+    # Load configuration from .env (shared parser handles inline comments and
+    # quoted values, unlike the previous inline split).
+    env_path = resolve_env_path(script_dir, args.config)
+    if args.config and not env_path.is_file():
+        print(f"Error: --config file not found: {env_path}", file=sys.stderr)
+        sys.exit(1)
+    config = load_env_file(env_path)
 
     data_dir = resolve_data_dir(script_dir, config)
     local_views_dir = resolve_local_views_dir(script_dir, config)

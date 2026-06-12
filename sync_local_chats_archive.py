@@ -21,49 +21,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set, Optional, Tuple
 
-from paths import resolve_data_dir, resolve_archived_exports_dir
+from paths import resolve_data_dir, resolve_archived_exports_dir, resolve_env_path, load_env_file
 
 
 # ============================================================================
 # Shared utility functions
 # ============================================================================
-
-def load_env_config(script_dir: Path) -> Dict[str, str]:
-    """
-    Load configuration from .env file without using external dependencies.
-
-    Returns a dictionary of config values.
-    """
-    config = {}
-    env_file = script_dir / ".env"
-
-    if not env_file.exists():
-        return config
-
-    try:
-        with open(env_file, "r", encoding="utf-8") as f:
-            for line in f:
-                # Strip whitespace
-                line = line.strip()
-
-                # Skip empty lines and comments
-                if not line or line.startswith("#"):
-                    continue
-
-                # Parse key=value
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    key = key.strip()
-                    value = value.strip()
-
-                    # Only add non-empty values
-                    if value:
-                        config[key] = value
-    except Exception as e:
-        print(f"Warning: Could not read .env file: {e}")
-
-    return config
-
 
 def sanitize_name(name: str) -> str:
     """
@@ -843,6 +806,10 @@ Export your data:
         action="store_true",
         help="Process ChatGPT exports ([hex]-YYYY-MM-DD-HH-MM-SS-[hex].zip)"
     )
+    parser.add_argument(
+        "--config", metavar="PATH", default=None,
+        help="Path to the .env config file (default: alongside this script)",
+    )
 
     args = parser.parse_args()
 
@@ -858,8 +825,13 @@ Export your data:
     # Get script directory
     script_dir = Path(__file__).parent.resolve()
 
-    # Load configuration
-    config = load_env_config(script_dir)
+    # Load configuration (shared parser also handles inline comments and quoted
+    # values, unlike the previous bespoke split).
+    env_path = resolve_env_path(script_dir, args.config)
+    if args.config and not env_path.is_file():
+        print(f"Error: --config file not found: {env_path}", file=sys.stderr)
+        sys.exit(1)
+    config = load_env_file(env_path)
 
     # Create appropriate provider
     if args.claude:

@@ -118,9 +118,17 @@ Fixtures are defined in `conftest.py`:
 - **`sample_claude_export`**: Valid Claude export zip with conversations and projects
 - **`sample_chatgpt_export`**: Valid ChatGPT export zip
 - **`prepopulated_archive`**: Workspace with existing conversations (for update testing)
-- **`test_env_file`**: Test .env file with ChatGPT email configuration
-- **`repo_root`**: Path to repository root (for running scripts)
+- **`test_env_file`**: Writes a test `.env` *inside the workspace* and returns its path
+- **`run_cli`**: Runs an entry-point script as a subprocess, pinned to a test config via
+  `--config` (keyword-only, required). Always use this instead of calling `subprocess.run`
+  directly, so the script never reads the real `repo_root/.env`.
+- **`repo_root`**: Path to repository root
 - **`fixtures_dir`**: Path to fixtures directory
+
+> **Safety:** the entry-point scripts take `--config PATH`; tests point every subprocess at
+> a workspace-local `.env` through `run_cli`. The real `repo_root/.env` is never read,
+> written, copied, or moved by any test — an interrupted run leaves it untouched. Do not
+> reintroduce `repo_root / ".env"` swaps in fixtures.
 
 ## Test Coverage
 
@@ -153,19 +161,23 @@ Fixtures are defined in `conftest.py`:
 1. Create test function in appropriate file:
    ```python
    @pytest.mark.integration
-   def test_my_new_feature(isolated_workspace, sample_claude_export, repo_root):
+   def test_my_new_feature(isolated_workspace, sample_claude_export, run_cli, test_env_file):
        # Setup
        # ...
 
-       # Execute
-       result = subprocess.run(["python", str(repo_root / "script.py")], ...)
+       # Execute (run_cli adds --config so the real repo .env is never touched)
+       result = run_cli(
+           "sync_local_chats_archive.py", "--claude",
+           config=test_env_file, cwd=isolated_workspace,
+       )
 
        # Verify
        assert result.returncode == 0
    ```
 
 2. Use fixtures to set up test data
-3. Run actual scripts with `subprocess.run()`
+3. Run actual scripts through `run_cli(...)` (never raw `subprocess.run`) — forgetting
+   `config=` raises `TypeError` immediately rather than silently reading the real `.env`
 4. Verify filesystem state and outputs
 5. Temporary workspace is automatically cleaned up
 

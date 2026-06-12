@@ -5,34 +5,27 @@ These tests exercise the search functionality with real data.
 """
 import json
 import shutil
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
 
 @pytest.mark.integration
-def test_search_exact_phrase_match(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_search_exact_phrase_match(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test searching for an exact phrase in conversations."""
     # Setup: Import conversations first
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0, "Setup sync failed"
 
     # Execute: Search for phrase that exists in test data
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "Python function"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "Python function",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nSearch STDOUT:\n{result.stdout}")
@@ -47,26 +40,22 @@ def test_search_exact_phrase_match(isolated_workspace, sample_claude_export, rep
 
 
 @pytest.mark.integration
-def test_search_json_output(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_search_json_output(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test search with JSON output format."""
     # Setup: Import conversations
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: Search with JSON output
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "integration testing", "-j"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "integration testing", "-j",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nJSON Search STDOUT:\n{result.stdout}")
@@ -98,7 +87,7 @@ def test_search_json_output(isolated_workspace, sample_claude_export, repo_root,
 
 @pytest.mark.integration
 def test_search_cross_provider(isolated_workspace, sample_claude_export, sample_chatgpt_export,
-                                test_env_file, repo_root):
+                                test_env_file, run_cli):
     """Test searching across both Claude and ChatGPT conversations."""
     # Setup: Import both Claude and ChatGPT conversations
     claude_zip = isolated_workspace / "data-2025-01-05.zip"
@@ -108,29 +97,23 @@ def test_search_cross_provider(isolated_workspace, sample_claude_export, sample_
     shutil.copy(sample_chatgpt_export, chatgpt_zip)
 
     # Sync Claude
-    sync_claude = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_claude = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_claude.returncode == 0
 
     # Sync ChatGPT
-    sync_chatgpt = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--chatgpt"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_chatgpt = run_cli(
+        "sync_local_chats_archive.py", "--chatgpt",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_chatgpt.returncode == 0
 
     # Execute: Search for term that appears in ChatGPT conversation
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "ChatGPT", "-j"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "ChatGPT", "-j",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nCross-provider search:\n{result.stdout}")
@@ -158,7 +141,7 @@ def test_search_cross_provider(isolated_workspace, sample_claude_export, sample_
 
 @pytest.mark.integration
 def test_search_finds_chatgpt_message_body(isolated_workspace, sample_chatgpt_export,
-                                            test_env_file, repo_root):
+                                            test_env_file, run_cli):
     """Search must index ChatGPT message bodies (mapping format), not just titles.
 
     Regression: ChatGPT exports use a `mapping` of nodes with
@@ -168,22 +151,17 @@ def test_search_finds_chatgpt_message_body(isolated_workspace, sample_chatgpt_ex
     chatgpt_zip = isolated_workspace / sample_chatgpt_export.name
     shutil.copy(sample_chatgpt_export, chatgpt_zip)
 
-    sync_chatgpt = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--chatgpt"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True,
+    sync_chatgpt = run_cli(
+        "sync_local_chats_archive.py", "--chatgpt",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_chatgpt.returncode == 0, sync_chatgpt.stderr
 
     # "trained by OpenAI" appears only inside the assistant message parts —
     # NOT in the title. If the extractor ignores `mapping`, this finds nothing.
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "-e", "trained by OpenAI", "-j"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True,
+    result = run_cli(
+        "full_text_search_chats_archive.py", "-e", "trained by OpenAI", "-j",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert result.returncode == 0, result.stderr
 
@@ -196,27 +174,22 @@ def test_search_finds_chatgpt_message_body(isolated_workspace, sample_chatgpt_ex
 
 
 @pytest.mark.integration
-def test_search_no_results(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_search_no_results(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test search with query that has no matches."""
     # Setup: Import conversations
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: Search for non-existent term
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "xyzabc123nonexistentterm"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "xyzabc123nonexistentterm",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nNo results search:\n{result.stdout}")
@@ -229,28 +202,24 @@ def test_search_no_results(isolated_workspace, sample_claude_export, repo_root, 
 
 
 @pytest.mark.integration
-def test_search_multi_term_default(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_search_multi_term_default(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test that default search finds conversations containing all words individually (AND logic)."""
     # Setup: Import conversations first
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0, "Setup sync failed"
 
     # "write" and "keyword" both appear in conv-uuid-001 but NOT as a contiguous phrase
     # "write" is in "How do I write a Python function?"
     # "keyword" is in "Here's how to write a Python function with def keyword."
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "write keyword"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "write keyword",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nMulti-term search STDOUT:\n{result.stdout}")
@@ -261,26 +230,22 @@ def test_search_multi_term_default(isolated_workspace, sample_claude_export, rep
 
 
 @pytest.mark.integration
-def test_search_exact_flag(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_search_exact_flag(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test that -e/--exact flag restores exact-phrase behavior."""
     # Setup: Import conversations first
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0, "Setup sync failed"
 
     # With -e, "write keyword" should NOT match (not a contiguous phrase)
-    result_no_match = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "-e", "write keyword"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result_no_match = run_cli(
+        "full_text_search_chats_archive.py", "-e", "write keyword",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nExact non-match STDOUT:\n{result_no_match.stdout}")
@@ -290,11 +255,9 @@ def test_search_exact_flag(isolated_workspace, sample_claude_export, repo_root, 
         "Exact search should not find conversation when phrase is non-contiguous"
 
     # With -e, "Python function" SHOULD match (it IS a contiguous phrase)
-    result_match = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "-e", "Python function"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result_match = run_cli(
+        "full_text_search_chats_archive.py", "-e", "Python function",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     print(f"\nExact match STDOUT:\n{result_match.stdout}")
@@ -306,25 +269,21 @@ def test_search_exact_flag(isolated_workspace, sample_claude_export, repo_root, 
 
 @pytest.mark.integration
 def test_search_no_query_browses_all_newest_first(isolated_workspace, sample_claude_export,
-                                                  repo_root, test_env_file):
+                                                  run_cli, test_env_file):
     """With no query, every item is returned ordered by updated_at descending."""
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # No positional query — browse mode.
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"), "-j"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "-j",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert result.returncode == 0, f"Browse failed: {result.stderr}"
 
@@ -345,27 +304,22 @@ def test_search_no_query_browses_all_newest_first(isolated_workspace, sample_cla
 
 
 @pytest.mark.integration
-def test_search_scoring_accuracy(isolated_workspace, sample_claude_export, repo_root, test_env_file):
+def test_search_scoring_accuracy(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test that search scoring ranks results correctly."""
     # Setup: Import conversations
     zip_dest = isolated_workspace / "data-2025-01-05.zip"
     shutil.copy(sample_claude_export, zip_dest)
 
-    sync_result = subprocess.run(
-        [sys.executable, str(repo_root / "sync_local_chats_archive.py"), "--claude"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
     )
     assert sync_result.returncode == 0
 
     # Execute: Search with JSON to get scores
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "integration testing", "-j"],
-        cwd=isolated_workspace,
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "integration testing", "-j",
+        config=test_env_file, cwd=isolated_workspace,
     )
 
     assert result.returncode == 0

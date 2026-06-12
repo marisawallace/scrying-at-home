@@ -16,8 +16,11 @@ import pytest
 
 
 def _run_cli(repo_root, workspace, script, *args):
+    # Every subprocess is pinned to the workspace-local .env so the real
+    # repo_root/.env is never read.
     return subprocess.run(
-        [sys.executable, str(repo_root / script), *args],
+        [sys.executable, str(repo_root / script),
+         "--config", str(workspace / ".env"), *args],
         cwd=workspace,
         capture_output=True,
         text=True,
@@ -88,11 +91,7 @@ def full_archive_workspace(isolated_workspace, sample_claude_export,
     }
     (subagent_dir / "agent-sub-001.jsonl").write_text(json.dumps(subagent_line) + "\n")
 
-    repo_env = repo_root / ".env"
-    backup_env = repo_root / ".env.backup"
-    if repo_env.exists():
-        shutil.copy(repo_env, backup_env)
-    repo_env.write_text(
+    (isolated_workspace / ".env").write_text(
         f"ZIP_SEARCH_DIR={isolated_workspace}\n"
         f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"ARCHIVED_EXPORTS_DIR={isolated_workspace / 'data' / 'archived_exports'}\n"
@@ -109,12 +108,7 @@ def full_archive_workspace(isolated_workspace, sample_claude_export,
         sync = _run_cli(repo_root, isolated_workspace, "sync_local_chats_archive.py", flag)
         assert sync.returncode == 0, f"Setup sync {flag} failed: {sync.stderr}"
 
-    yield isolated_workspace
-
-    if backup_env.exists():
-        shutil.move(backup_env, repo_env)
-    else:
-        repo_env.unlink(missing_ok=True)
+    return isolated_workspace
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +524,7 @@ def test_renamed_host_reflected_without_reindex(full_archive_workspace, repo_roo
     _search(repo_root, ws, "virtual environment", "-s", "claude-code", "-j")  # build index
 
     cc_dir = ws / "claude_code_data"
-    env_path = repo_root / ".env"
+    env_path = ws / ".env"
     env = env_path.read_text()
     assert f"CLAUDE_CODE_SOURCES=testhost={cc_dir}" in env
     env_path.write_text(env.replace(

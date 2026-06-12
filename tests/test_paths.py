@@ -53,3 +53,20 @@ def test_search_index_defaults_to_home_cache_without_xdg(monkeypatch):
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
     result = paths.resolve_search_index_path({})
     assert result == Path.home() / ".cache" / "clauding-at-home" / "index.db"
+
+
+def test_resolve_env_path_defaults_to_script_dir_dot_env():
+    assert paths.resolve_env_path(SCRIPT_DIR, None) == SCRIPT_DIR / ".env"
+
+
+def test_resolve_env_path_blank_config_falls_back_to_default():
+    # argparse default and an empty string both mean "no explicit config".
+    assert paths.resolve_env_path(SCRIPT_DIR, "") == SCRIPT_DIR / ".env"
+
+
+def test_resolve_env_path_explicit_config_is_used():
+    assert paths.resolve_env_path(SCRIPT_DIR, "/custom/profile.env") == Path("/custom/profile.env")
+
+
+def test_resolve_env_path_expands_user():
+    assert paths.resolve_env_path(SCRIPT_DIR, "~/cfg/.env") == Path.home() / "cfg" / ".env"

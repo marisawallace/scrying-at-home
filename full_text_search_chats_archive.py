@@ -27,6 +27,7 @@ from paths import (
     load_env_file,
     parse_claude_code_sources,
     resolve_data_dir,
+    resolve_env_path,
     resolve_local_views_dir,
     resolve_host_name,
     resolve_search_index_path,
@@ -1204,6 +1205,11 @@ Examples:
         help="Run the query through both the index and a full scan and diff the results; prints VERIFY OK or a field-level diff and exits (proves the index is a pure accelerator)"
     )
 
+    parser.add_argument(
+        "--config", metavar="PATH", default=None,
+        help="Path to the .env config file (default: alongside this script)",
+    )
+
     args = parser.parse_args()
 
     # --stats reports over the whole archive, so it ignores any query and
@@ -1228,7 +1234,11 @@ Examples:
 
     # Load configuration from .env (shared parser also handles inline comments
     # and quoted values, unlike the previous inline split).
-    config = load_env_file(script_dir / ".env")
+    env_path = resolve_env_path(script_dir, args.config)
+    if args.config and not env_path.is_file():
+        print(f"Error: --config file not found: {env_path}", file=sys.stderr)
+        sys.exit(1)
+    config = load_env_file(env_path)
 
     data_dir = resolve_data_dir(script_dir, config)
 

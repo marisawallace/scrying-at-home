@@ -2,7 +2,8 @@
 Pytest configuration and shared fixtures for integration tests.
 """
 import json
-import shutil
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Dict, Any
@@ -256,29 +257,22 @@ def sample_chatgpt_export(tmp_path):
 
 
 @pytest.fixture
-def test_env_file(repo_root, request):
+def test_env_file(request):
     """
-    Temporarily replace the repo's .env file with a test version.
+    Write a test .env *inside the isolated workspace* and return its path.
 
-    This ensures the sync script looks for zip files in the test workspace
-    instead of the user's real ZIP_SEARCH_DIR.
+    The entry-point scripts accept ``--config PATH``; tests point each
+    subprocess at this workspace-local file (via the ``run_cli`` fixture) so
+    the user's real ``repo_root/.env`` is never read, written, or moved.
 
     This fixture requires that the test has an isolated_workspace fixture
     to know where to point ZIP_SEARCH_DIR.
 
     Returns the path to the test .env file.
     """
-    repo_env = repo_root / ".env"
-    backup_env = repo_root / ".env.backup"
-
     # Get the isolated_workspace from the test's fixtures
     workspace = request.getfixturevalue('isolated_workspace')
 
-    # Backup existing .env if it exists
-    if repo_env.exists():
-        shutil.copy(repo_env, backup_env)
-
-    # Create test .env in repo root with paths pointing to workspace
     env_content = f"""# Test configuration
 ZIP_SEARCH_DIR={workspace}
 LLM_DATA_DIR={workspace / "data" / "llm_data"}
@@ -286,15 +280,31 @@ ARCHIVED_EXPORTS_DIR={workspace / "data" / "archived_exports"}
 LOCAL_VIEWS_DIR={workspace / "data" / "local_views"}
 SEARCH_INDEX_DB={workspace / "search_index.db"}
 """
-    repo_env.write_text(env_content)
+    env_path = workspace / ".env"
+    env_path.write_text(env_content)
+    return env_path
 
-    yield repo_env
 
-    # Restore original .env
-    if backup_env.exists():
-        shutil.move(backup_env, repo_env)
-    else:
-        repo_env.unlink(missing_ok=True)
+@pytest.fixture
+def run_cli(repo_root):
+    """Run an entry-point script as a subprocess, pinned to a test config.
+
+    ``config`` is required (keyword-only) and is passed as ``--config`` so the
+    script never falls back to the real ``repo_root/.env``. A forgotten config
+    raises ``TypeError`` immediately rather than silently reading the live file.
+
+    Extra keyword args (``cwd``, ``env``, ...) pass through to
+    ``subprocess.run``; ``capture_output``/``text`` default to True.
+    """
+    def _run(script: str, *args: str, config, **kwargs):
+        kwargs.setdefault("capture_output", True)
+        kwargs.setdefault("text", True)
+        return subprocess.run(
+            [sys.executable, str(repo_root / script),
+             "--config", str(config), *args],
+            **kwargs,
+        )
+    return _run
 
 
 @pytest.fixture

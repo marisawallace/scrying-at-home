@@ -3,16 +3,14 @@ Integration tests for Claude Code search functionality.
 """
 import json
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture
-def claude_code_workspace(isolated_workspace, repo_root):
-    """Set up a workspace with Claude Code JSONL data and swap .env."""
+def claude_code_workspace(isolated_workspace):
+    """Set up a workspace with Claude Code JSONL data and a workspace-local .env."""
     # Create Claude Code data directory
     cc_dir = isolated_workspace / "claude_code_data"
     project_dir = cc_dir / "-home-testuser-projects-my-app"
@@ -22,37 +20,23 @@ def claude_code_workspace(isolated_workspace, repo_root):
     fixture = Path(__file__).parent.parent / "fixtures" / "sample_claude_code_session.jsonl"
     shutil.copy(fixture, project_dir / "cc-test-session-001.jsonl")
 
-    # Temporarily replace repo .env
-    repo_env = repo_root / ".env"
-    backup_env = repo_root / ".env.backup"
-    if repo_env.exists():
-        shutil.copy(repo_env, backup_env)
-
     env_content = (
         f"CLAUDE_CODE_SOURCES=testhost={cc_dir}\n"
         f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
         f"SEARCH_INDEX_DB={isolated_workspace / 'search_index.db'}\n"
     )
-    repo_env.write_text(env_content)
+    (isolated_workspace / ".env").write_text(env_content)
 
-    yield isolated_workspace
-
-    # Restore original .env
-    if backup_env.exists():
-        shutil.move(backup_env, repo_env)
-    else:
-        repo_env.unlink(missing_ok=True)
+    return isolated_workspace
 
 
 @pytest.mark.integration
-def test_search_claude_code_only(claude_code_workspace, repo_root):
+def test_search_claude_code_only(claude_code_workspace, run_cli):
     """Search with --source claude-code returns results from JSONL archives."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "virtual environment", "-s", "claude-code"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "virtual environment", "-s", "claude-code",
+        config=claude_code_workspace / ".env",
     )
 
     print(f"\nSTDOUT:\n{result.stdout}")
@@ -64,13 +48,11 @@ def test_search_claude_code_only(claude_code_workspace, repo_root):
 
 
 @pytest.mark.integration
-def test_search_claude_code_json_output(claude_code_workspace, repo_root):
+def test_search_claude_code_json_output(claude_code_workspace, run_cli):
     """Search with JSON output includes provider and extra fields."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "virtual environment", "-s", "claude-code", "-j"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "virtual environment", "-s", "claude-code", "-j",
+        config=claude_code_workspace / ".env",
     )
 
     assert result.returncode == 0
@@ -86,13 +68,11 @@ def test_search_claude_code_json_output(claude_code_workspace, repo_root):
 
 
 @pytest.mark.integration
-def test_search_claude_code_resume_command(claude_code_workspace, repo_root):
+def test_search_claude_code_resume_command(claude_code_workspace, run_cli):
     """Search results show resume command for Claude Code sessions."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "virtual environment", "-s", "claude-code"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "virtual environment", "-s", "claude-code",
+        config=claude_code_workspace / ".env",
     )
 
     assert result.returncode == 0
@@ -101,13 +81,11 @@ def test_search_claude_code_resume_command(claude_code_workspace, repo_root):
 
 
 @pytest.mark.integration
-def test_search_source_all(claude_code_workspace, repo_root):
+def test_search_source_all(claude_code_workspace, run_cli):
     """Search with --source all (default) includes Claude Code results."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "virtual environment"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "virtual environment",
+        config=claude_code_workspace / ".env",
     )
 
     assert result.returncode == 0
@@ -115,13 +93,11 @@ def test_search_source_all(claude_code_workspace, repo_root):
 
 
 @pytest.mark.integration
-def test_search_source_llm_excludes_claude_code(claude_code_workspace, repo_root):
+def test_search_source_llm_excludes_claude_code(claude_code_workspace, run_cli):
     """Search with --source llm does not include Claude Code results."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "virtual environment", "-s", "llm"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "virtual environment", "-s", "llm",
+        config=claude_code_workspace / ".env",
     )
 
     assert result.returncode == 0
@@ -129,35 +105,23 @@ def test_search_source_llm_excludes_claude_code(claude_code_workspace, repo_root
 
 
 @pytest.mark.integration
-def test_search_no_claude_code_dir_configured(isolated_workspace, repo_root):
+def test_search_no_claude_code_dir_configured(isolated_workspace, run_cli):
     """Search with --source claude-code fails gracefully when sources not configured."""
-    # Temporarily replace repo .env with one missing CLAUDE_CODE_SOURCES
-    repo_env = repo_root / ".env"
-    backup_env = repo_root / ".env.backup"
-    if repo_env.exists():
-        shutil.copy(repo_env, backup_env)
+    # A workspace-local .env missing CLAUDE_CODE_SOURCES
+    env_path = isolated_workspace / ".env"
+    env_path.write_text(f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n")
 
-    repo_env.write_text(f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n")
+    result = run_cli(
+        "full_text_search_chats_archive.py", "test", "-s", "claude-code",
+        config=env_path,
+    )
 
-    try:
-        result = subprocess.run(
-            [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-             "test", "-s", "claude-code"],
-            capture_output=True,
-            text=True
-        )
-
-        assert result.returncode != 0
-        assert "not configured" in result.stderr
-    finally:
-        if backup_env.exists():
-            shutil.move(backup_env, repo_env)
-        else:
-            repo_env.unlink(missing_ok=True)
+    assert result.returncode != 0
+    assert "not configured" in result.stderr
 
 
 @pytest.fixture
-def multi_host_claude_code_workspace(isolated_workspace, repo_root):
+def multi_host_claude_code_workspace(isolated_workspace):
     """Set up a workspace with two host-labeled Claude Code source dirs.
 
     Both hosts have a session at the same cwd (project slug) — exercises
@@ -176,25 +140,15 @@ def multi_host_claude_code_workspace(isolated_workspace, repo_root):
     shutil.copy(fixture, laptop_dir / project_slug / "cc-laptop-session.jsonl")
     shutil.copy(fixture, desktop_dir / project_slug / "cc-desktop-session.jsonl")
 
-    repo_env = repo_root / ".env"
-    backup_env = repo_root / ".env.backup"
-    if repo_env.exists():
-        shutil.copy(repo_env, backup_env)
-
     env_content = (
         f"CLAUDE_CODE_SOURCES=laptop={laptop_dir},desktop={desktop_dir}\n"
         f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
         f"LOCAL_VIEWS_DIR={isolated_workspace / 'data' / 'local_views'}\n"
         f"SEARCH_INDEX_DB={isolated_workspace / 'search_index.db'}\n"
     )
-    repo_env.write_text(env_content)
+    (isolated_workspace / ".env").write_text(env_content)
 
-    yield isolated_workspace
-
-    if backup_env.exists():
-        shutil.move(backup_env, repo_env)
-    else:
-        repo_env.unlink(missing_ok=True)
+    return isolated_workspace
 
 
 def _write_cc_session(path: Path, session_id: str, cwd: str, timestamp: str, text: str):
@@ -212,7 +166,7 @@ def _write_cc_session(path: Path, session_id: str, cwd: str, timestamp: str, tex
 
 
 @pytest.mark.integration
-def test_search_here_no_query_newest_first(isolated_workspace, repo_root, tmp_path):
+def test_search_here_no_query_newest_first(isolated_workspace, run_cli, tmp_path):
     """--here with no query lists this dir's sessions, newest first."""
     cc_dir = isolated_workspace / "claude_code_data"
     # Run from a real directory so session cwd == current cwd passes the filter.
@@ -226,29 +180,17 @@ def test_search_here_no_query_newest_first(isolated_workspace, repo_root, tmp_pa
     _write_cc_session(project_dir / "new.jsonl", "cc-new", str(run_dir),
                       "2026-05-01T10:00:00.000Z", "newer session about gadgets")
 
-    repo_env = repo_root / ".env"
-    backup_env = repo_root / ".env.backup"
-    if repo_env.exists():
-        shutil.copy(repo_env, backup_env)
-    repo_env.write_text(
+    env_path = isolated_workspace / ".env"
+    env_path.write_text(
         f"CLAUDE_CODE_SOURCES=testhost={cc_dir}\n"
         f"CLAUDE_CODE_HOST=testhost\n"
         f"LLM_DATA_DIR={isolated_workspace / 'data' / 'llm_data'}\n"
     )
 
-    try:
-        result = subprocess.run(
-            [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-             "--here", "-j"],
-            cwd=run_dir,
-            capture_output=True,
-            text=True,
-        )
-    finally:
-        if backup_env.exists():
-            shutil.move(backup_env, repo_env)
-        else:
-            repo_env.unlink(missing_ok=True)
+    result = run_cli(
+        "full_text_search_chats_archive.py", "--here", "-j",
+        config=env_path, cwd=run_dir,
+    )
 
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
@@ -260,13 +202,11 @@ def test_search_here_no_query_newest_first(isolated_workspace, repo_root, tmp_pa
 
 
 @pytest.mark.integration
-def test_search_claude_code_multi_source(multi_host_claude_code_workspace, repo_root):
+def test_search_claude_code_multi_source(multi_host_claude_code_workspace, run_cli):
     """Both host sources surface in results, each tagged with its hostname."""
-    result = subprocess.run(
-        [sys.executable, str(repo_root / "full_text_search_chats_archive.py"),
-         "virtual environment", "-s", "claude-code", "-j"],
-        capture_output=True,
-        text=True
+    result = run_cli(
+        "full_text_search_chats_archive.py", "virtual environment", "-s", "claude-code", "-j",
+        config=multi_host_claude_code_workspace / ".env",
     )
 
     assert result.returncode == 0, result.stderr

@@ -32,6 +32,10 @@ chmod +x view_conversation.py
 
 cp .env.example .env
 # Then read and edit .env -- all options are explained!
+#
+# By default each tool reads the .env sitting next to it. Pass --config PATH to
+# point at an alternate config/profile, e.g.
+#   python3 full_text_search_chats_archive.py "query" --config ~/work/.env
 
 # Claude Code setup -- more on this below:
 python3 migrations/002_setup_claude_code_archival.py
