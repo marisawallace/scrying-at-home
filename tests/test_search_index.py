@@ -400,7 +400,8 @@ def test_refresh_integrity_error_does_not_delete_db(tmp_path, monkeypatch):
     monkeypatch.setattr(si, "load_indexed_files", lambda conn: [])
 
     result = si.refresh(conn, tmp_path / "no-llm", [("testhost", tmp_path / "cc")],
-                        lambda data, item_type, provider: [])
+                        lambda data, item_type, provider: [],
+                        lambda data, item_type, provider: "")
     assert result is None
     assert db.exists()
     conn.close()

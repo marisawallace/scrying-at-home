@@ -72,11 +72,30 @@ def _last_timestamped_line(lines: list[dict]) -> Optional[dict]:
     return None
 
 
+def extract_model(lines: list[dict]) -> str:
+    """The model that did the work in a Claude Code session: the most-used
+    model id across assistant lines, ignoring the "<synthetic>" placeholder
+    Claude Code stamps on harness-generated assistant turns.
+
+    Empty string when no real model is recorded (e.g. a session with only
+    synthetic lines)."""
+    counts: Counter[str] = Counter()
+    for line in lines:
+        if line.get("type") != "assistant":
+            continue
+        model = line.get("message", {}).get("model")
+        if model and model != "<synthetic>":
+            counts[model] += 1
+    if not counts:
+        return ""
+    return counts.most_common(1)[0][0]
+
+
 def extract_session_metadata(lines: list[dict]) -> dict:
     """Extract metadata from parsed JSONL lines.
 
     Returns dict with keys:
-      session_id, cwd, git_branch, created_at, updated_at, name
+      session_id, cwd, git_branch, created_at, updated_at, name, model
     """
     first_prompt = _first_user_prompt(lines)
     last_line = _last_timestamped_line(lines)
@@ -111,6 +130,7 @@ def extract_session_metadata(lines: list[dict]) -> dict:
         "created_at": created_at,
         "updated_at": updated_at,
         "name": name,
+        "model": extract_model(lines),
     }
 
 

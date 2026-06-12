@@ -103,17 +103,22 @@ def _render_result(result, query: str, exact: bool, selected: bool, current_host
     label, label_style = _provider_label(result)
     line([(label_style, f"[{label}] "), ("bold", result.name)], is_title=True)
 
+    from full_text_search_chats_archive import prettify_model
+    model_label = prettify_model(result.model)
     if result.provider == "claude-code":
         extra = result.extra or {}
         host = extra.get("host", "")
         meta = [("fg:#888888", f"Created: {result.created_at[:10]} | Updated: {result.updated_at[:10]}")]
+        if model_label:
+            meta.append(("fg:#888888", f" | {model_label}"))
         if host:
             meta.append(("fg:#888888", " | "))
             host_style = "fg:#ff8c00" if demo or (current_host and host == current_host) else "fg:#888888"
             meta.append((host_style, host))
         line(meta)
     else:
-        line([("fg:#888888", f"Created: {result.created_at[:10]} | Updated: {result.updated_at[:10]} | {result.email}")])
+        model_segment = f"{model_label} | " if model_label else ""
+        line([("fg:#888888", f"Created: {result.created_at[:10]} | Updated: {result.updated_at[:10]} | {model_segment}{result.email}")])
 
     if result.provider == "claude-code":
         extra = result.extra or {}

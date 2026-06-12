@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +79,7 @@ class SearchResult:
     matches: List[Match]
     total_score: float
     extra: Optional[dict] = None  # Provider-specific metadata
+    model: str = ""  # Model that produced the conversation (raw provider id; "" if unknown)
 
     def get_provider_url(self) -> str:
         """Generate provider URL or resume command for this item."""
@@ -154,6 +156,68 @@ def recency_boost(updated_at: str) -> float:
         return max(0.0, 5.0 * (1.0 - days_ago / 365.0))
     except (ValueError, TypeError):
         return 0.0
+
+
+def extract_model_from_chatgpt_conversation(data: dict) -> str:
+    """The model that did the work in a ChatGPT conversation: the most-used
+    `model_slug` across assistant messages in the mapping. Empty string when
+    no assistant message records one."""
+    counts: "Counter[str]" = Counter()
+    mapping = data.get("mapping", {})
+    if not isinstance(mapping, dict):
+        return ""
+    for node in mapping.values():
+        if not isinstance(node, dict):
+            continue
+        message = node.get("message")
+        if not isinstance(message, dict):
+            continue
+        if (message.get("author") or {}).get("role") != "assistant":
+            continue
+        slug = (message.get("metadata") or {}).get("model_slug")
+        if slug:
+            counts[slug] += 1
+    if not counts:
+        return ""
+    return counts.most_common(1)[0][0]
+
+
+def extract_model_from_claude_conversation(data: dict) -> str:
+    """The model behind a claude.ai conversation. Claude.ai's account export
+    does not record a per-message model, so this is best-effort: it reads a
+    `model` field if a future/variant export carries one, else "" ."""
+    for msg in data.get("chat_messages", []):
+        if msg.get("sender") == "assistant" and msg.get("model"):
+            return msg["model"]
+    return data.get("model", "") or ""
+
+
+def extract_llm_model(data: dict, item_type: str, provider: str) -> str:
+    """Dispatch to the provider-specific model extractor. Projects have no
+    model. Returns a raw provider model id, or "" when unknown."""
+    if item_type != "conversation":
+        return ""
+    if provider == "chatgpt":
+        return extract_model_from_chatgpt_conversation(data)
+    return extract_model_from_claude_conversation(data)
+
+
+def prettify_model(model: str) -> str:
+    """Human-friendly label for a raw provider model id, for search output.
+
+    claude-opus-4-8         -> Opus 4.8
+    claude-sonnet-4-5-2025… -> Sonnet 4.5
+    gpt-4o                  -> GPT-4o
+    Unknown shapes pass through unchanged. Empty in, empty out."""
+    if not model:
+        return ""
+    m = re.match(r"claude-(opus|sonnet|haiku)-(\d+)-(\d+)", model)
+    if m:
+        family, major, minor = m.group(1), m.group(2), m.group(3)
+        return f"{family.capitalize()} {major}.{minor}"
+    if model.startswith("gpt-"):
+        return "GPT-" + model[len("gpt-"):]
+    return model
 
 
 def extract_text_from_conversation(data: dict) -> List[str]:
@@ -358,7 +422,8 @@ def search_item(filepath: Path, query: str, item_type: str, email: str, provider
             provider=provider,
             filepath=filepath,
             matches=matches,
-            total_score=total_score
+            total_score=total_score,
+            model=extract_llm_model(data, item_type, provider),
         )
     except (KeyError, TypeError, AttributeError) as e:
         print(f"Warning: Could not read {filepath}: {e}", file=sys.stderr)
@@ -497,6 +562,7 @@ def search_claude_code_archive(sources: List[Tuple[str, Path]], query: str, appl
                     filepath=jsonl_file,
                     matches=matches,
                     total_score=total_score,
+                    model=metadata.get("model", ""),
                     extra={
                         "cwd": metadata["cwd"],
                         "git_branch": metadata["git_branch"],
@@ -540,6 +606,7 @@ def results_from_index_items(rows: List[dict], apply_recency_boost: bool = True)
             matches=[Match(text=row["preview"], score=0.0)],
             total_score=score,
             extra=extra,
+            model=row.get("model", ""),
         ))
     return results
 
@@ -683,7 +750,9 @@ def print_results(results: List[SearchResult], query: str, exact: bool = False, 
             cwd = extra.get("cwd", "~")
             host = extra.get("host", "")
             host_suffix = f" | {host}" if host else ""
-            print(f"{Colors.DIM}Created: {result.created_at[:10]} | Updated: {result.updated_at[:10]}{host_suffix}{Colors.RESET}")
+            model_label = prettify_model(result.model)
+            model_segment = f" | {model_label}" if model_label else ""
+            print(f"{Colors.DIM}Created: {result.created_at[:10]} | Updated: {result.updated_at[:10]}{model_segment}{host_suffix}{Colors.RESET}")
             # Dim the resume command if the result is from a different host —
             # `claude -r` won't find the session locally, so it's not actionable here.
             resume_color = Colors.ORANGE
@@ -691,7 +760,9 @@ def print_results(results: List[SearchResult], query: str, exact: bool = False, 
                 resume_color = Colors.DIM
             print(f"{resume_color}pushd {shlex.quote(cwd)} && claude -r {result.uuid}{Colors.RESET}")
         else:
-            print(f"{Colors.DIM}Created: {result.created_at[:10]} | Updated: {result.updated_at[:10]} | {result.email}{Colors.RESET}")
+            model_label = prettify_model(result.model)
+            model_segment = f"{model_label} | " if model_label else ""
+            print(f"{Colors.DIM}Created: {result.created_at[:10]} | Updated: {result.updated_at[:10]} | {model_segment}{result.email}{Colors.RESET}")
             print(f"{Colors.BLUE}{result.get_provider_url()}{Colors.RESET}")
         print(f"{Colors.DIM}Score: {result.total_score:.1f} | Matches: {len(result.matches)}{Colors.RESET}")
 
@@ -948,7 +1019,8 @@ Examples:
         index_conn = search_index.open_index(index_path)
         if index_conn is not None:
             failed_files = search_index.refresh(
-                index_conn, data_dir, parse_claude_code_sources(config), extract_llm_texts
+                index_conn, data_dir, parse_claude_code_sources(config), extract_llm_texts,
+                extract_llm_model,
             )
             if failed_files is None:
                 try:

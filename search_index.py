@@ -40,7 +40,7 @@ from typing import Callable, Optional
 
 import claude_code_parser as ccp
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 RECONCILE_BATCH = 200
 
 # Below this many files a refresh is fast enough that progress output is just
@@ -116,6 +116,7 @@ CREATE TABLE items (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     email       TEXT NOT NULL,              -- account email; project slug for claude-code
+    model       TEXT NOT NULL DEFAULT '',   -- raw provider model id; '' if unknown
     host        TEXT NOT NULL DEFAULT '',
     cwd         TEXT NOT NULL DEFAULT '',
     git_branch  TEXT NOT NULL DEFAULT '',
@@ -252,6 +253,7 @@ def make_llm_item_meta(data: dict, item_type: str, texts: list[str]) -> dict:
         "name": name if name else "(untitled)",
         "created_at": data["created_at"],
         "updated_at": updated_at,
+        "model": "",  # filled by the caller, which has the provider
         "host": "",
         "cwd": "",
         "git_branch": "",
@@ -270,6 +272,7 @@ def make_cc_item_meta(metadata: dict, texts: list[str]) -> dict:
         "name": metadata["name"],
         "created_at": metadata["created_at"],
         "updated_at": metadata["updated_at"],
+        "model": metadata.get("model", ""),
         "host": "",  # filled from FileStat by the caller
         "cwd": metadata["cwd"],
         "git_branch": metadata["git_branch"],
@@ -599,16 +602,18 @@ def _insert_item_row(conn: sqlite3.Connection, file_id: int, provider: str,
                      email: str, meta: dict) -> None:
     conn.execute(
         "INSERT INTO items(file_id, uuid, item_type, provider, name, created_at, "
-        "updated_at, email, host, cwd, git_branch, preview, has_preview) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "updated_at, email, model, host, cwd, git_branch, preview, has_preview) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (file_id, meta["uuid"], meta["item_type"], provider, meta["name"],
-         meta["created_at"], meta["updated_at"], email, meta["host"],
-         meta["cwd"], meta["git_branch"], meta["preview"], int(meta["has_preview"])),
+         meta["created_at"], meta["updated_at"], email, meta.get("model", ""),
+         meta["host"], meta["cwd"], meta["git_branch"], meta["preview"],
+         int(meta["has_preview"])),
     )
 
 
 def _index_llm_file(conn: sqlite3.Connection, fs: FileStat,
-                    extract_llm_texts: Callable[[dict, str, str], list]) -> Optional[str]:
+                    extract_llm_texts: Callable[[dict, str, str], list],
+                    extract_llm_model: Callable[[dict, str, str], str]) -> Optional[str]:
     """Index one claude/chatgpt JSON file. Returns the path on failure.
 
     A file that cannot be read or parsed gets NO files row: it stays out of
@@ -622,6 +627,7 @@ def _index_llm_file(conn: sqlite3.Connection, fs: FileStat,
         data = json.loads(raw)
         texts = extract_llm_texts(data, fs.item_type, fs.provider)
         meta = make_llm_item_meta(data, fs.item_type, texts)
+        meta["model"] = extract_llm_model(data, fs.item_type, fs.provider)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         print(f"Warning: could not index {fs.path}: {e}", file=sys.stderr)
         return fs.path
@@ -668,7 +674,8 @@ def render_progress_bar(done: int, total: int, width: int = PROGRESS_BAR_WIDTH) 
 
 
 def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
-              extract_llm_texts: Callable[[dict, str, str], list]) -> list:
+              extract_llm_texts: Callable[[dict, str, str], list],
+              extract_llm_model: Callable[[dict, str, str], str]) -> list:
     """Apply a ReconcilePlan in batched transactions (interrupt-safe: a
     killed run loses at most one uncommitted batch and resumes next run).
 
@@ -701,9 +708,9 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
             _delete_file_rows(conn, ix.id)
         elif op == "rewrite":
             _delete_file_rows(conn, ix.id)
-            failed.append(_index_file(conn, fs, extract_llm_texts))
+            failed.append(_index_file(conn, fs, extract_llm_texts, extract_llm_model))
         else:
-            failed.append(_index_file(conn, fs, extract_llm_texts))
+            failed.append(_index_file(conn, fs, extract_llm_texts, extract_llm_model))
         done += 1
         if animate:
             print(f"\rIndexing {render_progress_bar(done, total)}",
@@ -719,15 +726,16 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
     return [path for path in failed if path is not None]
 
 
-def _index_file(conn, fs: FileStat, extract_llm_texts) -> Optional[str]:
+def _index_file(conn, fs: FileStat, extract_llm_texts, extract_llm_model) -> Optional[str]:
     if fs.source == SOURCE_LLM:
-        return _index_llm_file(conn, fs, extract_llm_texts)
+        return _index_llm_file(conn, fs, extract_llm_texts, extract_llm_model)
     return _index_cc_file(conn, fs)
 
 
 def refresh(conn: sqlite3.Connection, data_dir: Path,
             cc_sources: list[tuple[str, Path]],
-            extract_llm_texts: Callable[[dict, str, str], list]) -> Optional[list]:
+            extract_llm_texts: Callable[[dict, str, str], list],
+            extract_llm_model: Callable[[dict, str, str], str]) -> Optional[list]:
     """Bring the index up to date with the filesystem.
 
     Returns the (usually empty) list of file paths that could not be
@@ -756,7 +764,7 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
             plan = diff_index(disk, load_indexed_files(conn))
             if plan.is_noop():
                 return []
-            return reconcile(conn, plan, extract_llm_texts)
+            return reconcile(conn, plan, extract_llm_texts, extract_llm_model)
     except sqlite3.IntegrityError as e:
         # A concurrent refresh raced us to a new files.path row (or a UNIQUE
         # constraint otherwise tripped). This is contention, never
@@ -812,7 +820,7 @@ def browse_items(conn: sqlite3.Connection, source: str) -> Optional[list]:
     try:
         rows = conn.execute(
             "SELECT i.uuid, i.item_type, i.provider, i.name, i.created_at, i.updated_at, "
-            "i.email, i.host, i.cwd, i.git_branch, i.preview, f.path "
+            "i.email, i.model, i.host, i.cwd, i.git_branch, i.preview, f.path "
             "FROM items i JOIN files f ON f.id = i.file_id "
             "WHERE i.has_preview = 1 AND f.source = ? ORDER BY f.path",
             (source,),
@@ -821,7 +829,7 @@ def browse_items(conn: sqlite3.Connection, source: str) -> Optional[list]:
         print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
         return None
     keys = ("uuid", "item_type", "provider", "name", "created_at", "updated_at",
-            "email", "host", "cwd", "git_branch", "preview", "path")
+            "email", "model", "host", "cwd", "git_branch", "preview", "path")
     return [dict(zip(keys, row)) for row in rows]
 
 

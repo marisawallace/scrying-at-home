@@ -287,3 +287,31 @@ class TestCountToolUses:
 
     def test_empty(self):
         assert ccp.count_tool_uses([]) == {}
+
+
+class TestExtractModel:
+    def test_most_common_assistant_model(self):
+        lines = [
+            {"type": "assistant", "message": {"model": "claude-opus-4-8"}},
+            {"type": "assistant", "message": {"model": "claude-opus-4-8"}},
+            {"type": "assistant", "message": {"model": "claude-sonnet-4-6"}},
+        ]
+        assert ccp.extract_model(lines) == "claude-opus-4-8"
+
+    def test_ignores_synthetic_placeholder(self):
+        lines = [
+            {"type": "assistant", "message": {"model": "<synthetic>"}},
+            {"type": "assistant", "message": {"model": "<synthetic>"}},
+            {"type": "assistant", "message": {"model": "claude-opus-4-8"}},
+        ]
+        assert ccp.extract_model(lines) == "claude-opus-4-8"
+
+    def test_ignores_user_lines(self):
+        lines = [{"type": "user", "message": {"content": "hi", "model": "x"}}]
+        assert ccp.extract_model(lines) == ""
+
+    def test_empty(self):
+        assert ccp.extract_model([]) == ""
+        assert ccp.extract_model(
+            [{"type": "assistant", "message": {"model": "<synthetic>"}}]
+        ) == ""
