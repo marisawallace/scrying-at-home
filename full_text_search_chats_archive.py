@@ -1012,6 +1012,11 @@ def run_verify(index_conn, data_dir, cc_sources, query, exact, source) -> int:
     the standing proof that the index is a pure accelerator, not a source of
     divergent answers."""
     import search_index
+    # Mirror the normal path: an explicit claude-code search with no sources
+    # configured is an error, not a vacuous "VERIFY OK (0 results)".
+    if source == "claude-code" and not cc_sources:
+        print(f"Error: {CLAUDE_CODE_SOURCES_ENV_KEY} not configured in .env", file=sys.stderr)
+        return 1
     with search_index.read_snapshot(index_conn):
         index_results = gather_query_results(True, index_conn, data_dir, cc_sources, query, exact, source)
     scan_results = gather_query_results(False, None, data_dir, cc_sources, query, exact, source)
