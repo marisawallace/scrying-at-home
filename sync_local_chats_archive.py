@@ -817,14 +817,14 @@ Examples:
   %(prog)s --chatgpt
 
 The script will:
-  1. Find export zip files in configured ZIP_SEARCH_DIR (or current directory)
+  1. Find export zip files in configured ZIP_SEARCH_DIR
   2. Extract conversations and projects organized by provider and email
   3. Update existing conversations (matched by UUID)
   4. Preserve locally archived chats deleted from the provider
   5. Move processed zips to data/archived_exports/{provider}/{email}/
 
 Configuration:
-  Set ZIP_SEARCH_DIR in .env to customize where to search for export files.
+  Set ZIP_SEARCH_DIR in .env to the directory to search for export files (required).
   See .env.example for configuration options.
 
 Export your data:
@@ -867,13 +867,18 @@ Export your data:
     else:  # args.chatgpt
         provider = ChatGPTProvider(script_dir, config)
 
-    # Determine where to search for zip files
-    if "ZIP_SEARCH_DIR" in config:
-        # Use configured directory (expand ~ if present)
-        search_dir = Path(config["ZIP_SEARCH_DIR"]).expanduser()
-    else:
-        # Default to script directory
-        search_dir = script_dir
+    # Determine where to search for zip files (ZIP_SEARCH_DIR is required)
+    if not config.get("ZIP_SEARCH_DIR"):
+        print(
+            "ERROR: ZIP_SEARCH_DIR is not set.\n"
+            "Set it in your .env to the directory containing your export zip "
+            "files (typically your browser's downloads folder), e.g.:\n"
+            "  ZIP_SEARCH_DIR=~/Downloads"
+        )
+        sys.exit(1)
+
+    # Use configured directory (expand ~ if present)
+    search_dir = Path(config["ZIP_SEARCH_DIR"]).expanduser()
 
     # Find zip files
     zip_files = provider.find_zip_files(search_dir)

@@ -30,17 +30,14 @@ chmod +x sync_local_chats_archive.py
 chmod +x full_text_search_chats_archive.py
 chmod +x view_conversation.py
 
-# EDIT THIS IF YOU DON'T WANT TO SEARCH IN ~/Downloads
-cat > .env << 'EOF'
-# Where to search for export zip files (optional, defaults to current directory)
-ZIP_SEARCH_DIR=~/Downloads
-EOF
+cp .env.example .env
+# Then read and edit .env -- all options are explained!
 
 # Claude Code setup -- more on this below:
 python3 migrations/002_setup_claude_code_archival.py
 ```
 
-I highly recommend adding aliases to your `.bashrc` or equivalent.
+I highly recommend adding aliases to your `.bashrc` or equivalent:
 
 ```
 alias ccs="cd $CODE_HOME/clauding-at-home/"
@@ -93,7 +90,7 @@ Then everything should just work!
 
 #### Claude Code
 
-Writes a JSONL transcript per session under `~/.claude/projects/`. These are local to your machine-- not synced to the cloud.
+Claude Code writes a JSONL transcript per session under `~/.claude/projects/`. These are local to your machine-- not synced to the cloud.
 
 `claude_code_hook.py` in this repo can archive all those sessions for search, sync, and markdown editing.
 
@@ -103,7 +100,7 @@ Setup is one command:
 python3 migrations/002_setup_claude_code_archival.py
 ```
 
-Which adds hooks in your `~/.claude/settings.json` to call `claude_code_hook.py`. By default, sessions are archived under `clauding-at-home/data/llm_data/claude-code/[HOSTNAME]/`. You can change this with `CLAUDE_CODE_SOURCES` in `.env`.
+Which adds hooks in your `~/.claude/settings.json` to call `claude_code_hook.py`. Sessions are archived based on `CLAUDE_CODE_HOST` and `CLAUDE_CODE_SOURCES`, which must be set in `.env`. The migration sets these for you.
 
 
 **Assumption**: Claude Code JSONL transcripts are immutable append-only logs.
@@ -140,7 +137,11 @@ python3 export_archive.py -s claude-code --dry-run
 ---
 
 
-## Directory Structure
+## Example Directory Structure
+
+`llm_data/`, `archived_exports/`, `local_views/`, and all `claude-code/<hostname>` locations are independent. Change them in `.env`.
+
+Here's the conventional structure:
 
 ```
 clauding-at-home/
@@ -184,19 +185,13 @@ clauding-at-home/
 
 ## Search index
 
-Search runs on an SQLite FTS5 index that's built automatically on the first run (takes a few seconds) and refreshed on each search: every changed file — appended, rewritten, or copied in by sync — is detected by its mtime/ctime/size and re-indexed whole (its old index rows are dropped and the file is re-read from scratch). The index stores the extracted texts of each file, so a search scores and snippets straight from the index without re-reading the matched files; a file whose stored texts are missing or unreadable is transparently re-scanned from disk. The index is a pure accelerator: the *set* of results, every score, and every snippet are identical to a full scan. (The one exception: results with *exactly equal* total scores may appear in a different relative order, because the scan path's tie order follows filesystem directory order, which the index can't reconstruct.) Pass `--no-index` for debugging.
+Search runs on an SQLite FTS5 index that's built automatically on the first run and refreshed on each search: every changed file is detected by its mtime/ctime/size. The index stores the extracted texts of each file, so a search scores and snippets straight from the index without re-reading the matched files. The index is a pure accelerator: the *set* of results, every score, and every snippet are identical to a full scan. (The one exception: results with *exactly equal* total scores may appear in a different relative order, because the scan path's tie order follows filesystem directory order, which the index can't reconstruct.)
 
-Run any query with `--verify` to prove this for yourself: it runs the query through both the index and a full scan, then prints `VERIFY OK` or a field-level diff of any divergence (and exits non-zero).
+For debugging, we support `--no-index` and `--verify` (which diffs searches with and without the index).
 
-The index rebuilds itself if deleted, corrupted, or outdated — including automatically whenever the extraction code changes, so it can never serve results from stale indexing logic.
+The index rebuilds itself if deleted, corrupted, or outdated, including automatically whenever the extraction code changes.
 
-Default location is `~/.cache/clauding-at-home/index.db`. Override with:
-
-```
-SEARCH_INDEX_DB=~/Documents/clauding-at-home-index.db
-```
-
-but the index must be stored on a local filesystem.
+Default location is `~/.cache/clauding-at-home/index.db`. You can change this in `.env`.
 
 
 ## Known Limitations

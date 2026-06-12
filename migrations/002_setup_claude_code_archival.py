@@ -54,6 +54,7 @@ from paths import (  # noqa: E402
     load_env_file,
     normalize_hostname,
     parse_sources_string,
+    resolve_data_dir,
 )
 
 
@@ -124,14 +125,13 @@ def upsert_env_scalar(env_path: Path, key: str, value: str) -> str:
                 status = "unchanged"
                 new_lines.append(line)
                 continue
-            new_lines.append(f"{prefix}{value}")
+            leading = line[:len(line) - len(line.lstrip())]
+            new_lines.append(f"{leading}{prefix}{value}")
             status = "updated" if not stripped.startswith("#") else "added"
         else:
             new_lines.append(line)
 
     if not found:
-        if new_lines and new_lines[-1].strip() != "":
-            new_lines.append("")
         new_lines.append(f"{prefix}{value}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
@@ -168,14 +168,13 @@ def upsert_env_sources(env_path: Path, hostname: str, archive_path: str) -> str:
 
             host_to_path[hostname] = archive_path
             new_pairs = [(h, host_to_path[h]) for h in host_to_path]
-            new_lines.append(f"CLAUDE_CODE_SOURCES={serialize_sources(new_pairs)}")
+            leading = line[:len(line) - len(line.lstrip())]
+            new_lines.append(f"{leading}CLAUDE_CODE_SOURCES={serialize_sources(new_pairs)}")
             status = "updated" if not stripped.startswith("#") else "added"
         else:
             new_lines.append(line)
 
     if not found:
-        if new_lines and new_lines[-1].strip() != "":
-            new_lines.append("")
         new_lines.append(f"CLAUDE_CODE_SOURCES={hostname}={archive_path}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
@@ -292,7 +291,11 @@ def main():
         answer = input(prompt).strip()
         hostname = answer or default_host
 
-    archive_dir = repo_root / "data" / "llm_data" / "claude-code" / hostname
+    # Place this host's archive under llm_data per the claude-code/<host>
+    # convention, but honor an LLM_DATA_DIR override (or the deprecated
+    # DATA_DIR alias) from .env so relocating llm_data carries the archives
+    # with it instead of stranding them at the hardcoded default.
+    archive_dir = resolve_data_dir(repo_root, existing_env) / "claude-code" / hostname
     command = hook_command(repo_root)
 
     print(f"\n  Repository root:  {CYAN}{repo_root}{RESET}")
