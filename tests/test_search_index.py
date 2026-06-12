@@ -385,19 +385,21 @@ def test_refresh_integrity_error_does_not_delete_db(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # scan_disk — characterization tests
 #
-# These pin the exact classification of the pathlib/glob implementation that
-# the os.scandir rewrite must reproduce. Behaviors observed against the old
-# implementation and preserved deliberately:
+# These pin the classification of the os.scandir implementation. Behaviors
+# preserved deliberately:
 #   - dotfiles match ('.hidden.json' is picked up, matching Path.glob('*'))
 #   - matching is case-sensitive ('X.JSON' / 'B.JSONL' are NOT picked up)
-#   - user/project dirs follow symlinks (a symlinked project dir is scanned,
-#     its files keyed by the *symlink* name)
-#   - the deep SOURCE_CC_TOOLS walk does NOT descend into symlinked dirs
-#     (matching Path.rglob recurse_symlinks=False), so a file reachable only
-#     through a symlinked subdir below depth 1 is absent
-#   - a broken symlink ending in .jsonl/.json is skipped (stat OSError)
 #   - any '*.jsonl' whose parent is a depth-1 dir is SOURCE_CC (incl. dirs
 #     like 'subagents'); everything deeper or at the root is SOURCE_CC_TOOLS
+#
+# Symlink handling for the Claude Code walk is no-follow (security boundary):
+#   - a symlinked project directory is NOT scanned (its files are absent), so
+#     a real dir reachable only through a symlink is not double-indexed
+#   - a symlinked '*.jsonl' file is skipped, even if its target is valid
+#   - a file reachable only through a symlinked subdir is absent
+#   - a broken symlink ending in .jsonl/.json is skipped
+# The LLM (claude/chatgpt) walk still follows symlinks for user dirs and *.json
+# files; a broken-symlink .json there is skipped on stat.
 # ---------------------------------------------------------------------------
 
 
@@ -442,18 +444,23 @@ def _build_corpus(tmp_path):
     (cc / "proj1" / "nested").mkdir()
     (cc / "proj1" / "nested" / "d3.jsonl").write_text("")  # depth-3 -> CC_TOOLS
 
-    # symlinked project dir (followed; keyed by symlink name)
+    # real project dir -> scanned
     (cc / "realproj").mkdir()
     (cc / "realproj" / "s.jsonl").write_text("")
+    # symlinked project dir -> NOT followed, its file must be ABSENT (no
+    # double-index of realproj/s.jsonl under the symlink name)
     (cc / "linkproj").symlink_to("realproj", target_is_directory=True)
 
-    # symlinked deeper dir below a project: its file must be ABSENT (rglob
-    # does not follow it, and it is below depth 1 so the CC pass misses it too)
+    # symlinked deeper dir below a project: its file must be ABSENT (not
+    # followed, and below depth 1 so the depth-2 pass misses it too)
     (cc / "othersrc").mkdir()
     (cc / "othersrc" / "hidden.jsonl").write_text("")
     (cc / "proj1" / "linksub").symlink_to("../othersrc", target_is_directory=True)
 
-    # broken symlinks ending in the right suffix -> skipped on stat
+    # symlinked *.jsonl file with a VALID target -> skipped (no-follow)
+    (cc / "proj1" / "linkfile.jsonl").symlink_to("a.jsonl")
+
+    # broken symlinks ending in the right suffix -> skipped
     (cc / "proj1" / "broken.jsonl").symlink_to("/nonexistent/x.jsonl")
     (conv / "broken.json").symlink_to("/nonexistent/y.json")
 
@@ -475,12 +482,11 @@ def test_scan_disk_classification(tmp_path):
          "claude", "alice@example.com", "project", ""),
         (si.SOURCE_LLM, "data/chatgpt/bob@example.com/conversations/g1.json",
          "chatgpt", "bob@example.com", "conversation", ""),
-        # CC searchable (depth-2, symlinked project dir keyed by symlink name)
+        # CC searchable (depth-2 real dirs; symlinked dirs are not followed)
         (si.SOURCE_CC, "cc/proj1/a.jsonl", "", "proj1", "", "host1"),
         (si.SOURCE_CC, "cc/proj1/.hidden.jsonl", "", "proj1", "", "host1"),
         (si.SOURCE_CC, "cc/subagents/deep.jsonl", "", "subagents", "", "host1"),
         (si.SOURCE_CC, "cc/realproj/s.jsonl", "", "realproj", "", "host1"),
-        (si.SOURCE_CC, "cc/linkproj/s.jsonl", "", "linkproj", "", "host1"),
         (si.SOURCE_CC, "cc/othersrc/hidden.jsonl", "", "othersrc", "", "host1"),
         # CC tools-only (root level + deeper than depth 2)
         (si.SOURCE_CC_TOOLS, "cc/root.jsonl", "", "", "", "host1"),

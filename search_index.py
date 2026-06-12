@@ -454,26 +454,33 @@ def _scan_suffix(dir_path, suffix: str):
             yield entry.path, st
 
 
-def _walk_jsonl(root):
-    """Yield (path_str, os.stat_result) for every '*.jsonl' entry at or below
-    root, reproducing Path.rglob('*.jsonl'): does not descend into symlinked
-    directories (recurse_symlinks=False), but still yields symlinked '*.jsonl'
-    entries (stat follows the link); entries failing to stat are skipped."""
+def _walk_cc_jsonl(root, depth: int = 1):
+    """Yield (path_str, os.stat_result, depth) for every regular-file '*.jsonl'
+    at or below root, without following symlinks: symlinked directories are not
+    descended into and symlinked '*.jsonl' entries are skipped entirely. depth
+    counts levels below the source root, so a direct child of root is depth 1.
+
+    Not following symlinks is a deliberate security boundary: only files that
+    physically live inside a configured Claude Code source get stat'd, indexed,
+    and later read for search. A symlink planted in the tree cannot pull
+    out-of-tree content into the index. It also removes the duplicate-row /
+    double-count that a symlinked project dir used to produce."""
     try:
         entries = os.scandir(root)
     except OSError:
         return
     with entries:
         for entry in entries:
-            if entry.name.endswith(".jsonl"):
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                yield from _walk_cc_jsonl(entry.path, depth + 1)
+            elif entry.name.endswith(".jsonl"):
                 try:
                     st = entry.stat()
                 except OSError:
-                    st = None
-                if st is not None:
-                    yield entry.path, st
-            if entry.is_dir(follow_symlinks=False):
-                yield from _walk_jsonl(entry.path)
+                    continue
+                yield entry.path, st, depth
 
 
 def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]]) -> list[FileStat]:
@@ -506,34 +513,23 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]]) -> list[FileSt
                         ))
 
     for host, cc_data_dir in cc_sources:
-        # Depth-1 directories (following symlinks, like iterdir() + is_dir())
-        # hold the searchable transcripts; their direct *.jsonl children are
-        # SOURCE_CC.
-        searchable = set()
-        try:
-            project_entries = os.scandir(cc_data_dir)
-        except OSError:
-            continue
-        with project_entries:
-            for project_entry in project_entries:
-                if not project_entry.is_dir():
-                    continue
-                for path, st in _scan_suffix(project_entry.path, ".jsonl"):
-                    searchable.add(path)
-                    stats.append(FileStat(
-                        path=path, source=SOURCE_CC,
-                        mtime_ns=st.st_mtime_ns, ctime_ns=st.st_ctime_ns, size=st.st_size,
-                        email=project_entry.name, host=host,
-                    ))
-        # Every other *.jsonl (root level or deeper, e.g. subagents) feeds the
-        # tool leaderboard only.
-        for path, st in _walk_jsonl(cc_data_dir):
-            if path in searchable:
-                continue
-            stats.append(FileStat(
-                path=path, source=SOURCE_CC_TOOLS,
-                mtime_ns=st.st_mtime_ns, ctime_ns=st.st_ctime_ns, size=st.st_size, host=host,
-            ))
+        # A single non-symlink-following walk classifies by depth: a *.jsonl
+        # that is a direct child of a depth-1 project directory (i.e. depth 2)
+        # is a searchable transcript (SOURCE_CC, keyed by that directory's
+        # name); every other *.jsonl — root level or deeper, e.g. subagents —
+        # feeds the tool leaderboard only (SOURCE_CC_TOOLS).
+        for path, st, depth in _walk_cc_jsonl(cc_data_dir):
+            if depth == 2:
+                stats.append(FileStat(
+                    path=path, source=SOURCE_CC,
+                    mtime_ns=st.st_mtime_ns, ctime_ns=st.st_ctime_ns, size=st.st_size,
+                    email=os.path.basename(os.path.dirname(path)), host=host,
+                ))
+            else:
+                stats.append(FileStat(
+                    path=path, source=SOURCE_CC_TOOLS,
+                    mtime_ns=st.st_mtime_ns, ctime_ns=st.st_ctime_ns, size=st.st_size, host=host,
+                ))
 
     return stats
 
