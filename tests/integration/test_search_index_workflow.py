@@ -444,6 +444,105 @@ def test_invalid_utf8_jsonl_skipped_and_warned_on_both_paths(full_archive_worksp
 
 
 @pytest.mark.integration
+def test_null_name_conversation_does_not_disable_index(full_archive_workspace, repo_root):
+    # An export with "name": null must not crash indexing: name_raw is NOT NULL,
+    # so a None there raises IntegrityError, which refresh() misreads as write
+    # contention and silently rolls back the whole index every run. Results must
+    # stay identical to a scan, and the file must be searchable.
+    ws = full_archive_workspace
+    conv_dir = ws / "data/llm_data/claude/claude-test@example.com/conversations"
+    nullnamed = conv_dir / "null-name-conv.json"
+    nullnamed.write_text(json.dumps({
+        "uuid": "null-name-uuid", "created_at": "2026-01-01T00:00:00Z",
+        "name": None,
+        "chat_messages": [
+            {"sender": "human", "text": "a NULLNAMEMARKER question", "created_at": "2026-01-01T00:00:01Z"},
+        ],
+    }))
+
+    out = _assert_index_matches_scan(repo_root, ws, "NULLNAMEMARKER", "-j")
+    assert "null-name-uuid" in out
+    # The index must have indexed it (no silent contention rollback to scan).
+    result = _run_cli(repo_root, ws, "full_text_search_chats_archive.py", "NULLNAMEMARKER", "-j")
+    assert "search index busy" not in result.stderr
+
+
+@pytest.mark.integration
+def test_torn_trailing_invalid_utf8_skips_whole_file_on_both_paths(full_archive_workspace, repo_root):
+    # Invalid UTF-8 in a torn trailing line (no terminating newline, e.g. a
+    # session flushed mid-multibyte-char) must drop the WHOLE file on both
+    # paths, not just the index path's complete-line prefix. The scan path's
+    # whole-file strict-UTF-8 open fails it; the index path must match.
+    ws = full_archive_workspace
+    bad = ws / "claude_code_data/-home-testuser-projects-my-app/cc-torn-utf8.jsonl"
+    good_line = json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": "zeppelin TORNMARKER content"},
+        "uuid": "msg-torn", "timestamp": "2026-04-12T09:00:00.000Z",
+        "cwd": "/home/testuser/projects/my-app",
+        "sessionId": "cc-torn-utf8", "gitBranch": "main",
+    })
+    # Complete line + newline, then a torn trailing line ending mid-char (bad,
+    # no trailing newline) — exactly the active-mid-write scenario.
+    bad.write_bytes(good_line.encode("utf-8") + b"\n" + b'{"partial": "\xff')
+
+    for extra in ([], ["--no-index"]):
+        result = _run_cli(repo_root, ws, "full_text_search_chats_archive.py",
+                          "TORNMARKER", "-j", *extra)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == []
+        assert "cc-torn-utf8.jsonl" in result.stderr
+
+    # --verify must not spuriously fail on this corpus.
+    verify = _run_cli(repo_root, ws, "full_text_search_chats_archive.py", "TORNMARKER", "--verify")
+    assert verify.returncode == 0, verify.stderr
+
+
+@pytest.mark.integration
+def test_non_list_file_texts_rescued_by_scan_fallback(full_archive_workspace, repo_root):
+    # Valid JSON that isn't an array (a bare string/dict) must trigger the same
+    # per-file scan rescue as a parse error — iterating it in
+    # find_matches_in_texts would silently mis-score over characters/keys.
+    import sqlite3
+    ws = full_archive_workspace
+    _search(repo_root, ws, "Python function", "-j")  # build index
+
+    conn = sqlite3.connect(ws / "search_index.db")
+    conv_dir = ws / "data/llm_data/claude/claude-test@example.com/conversations"
+    conv_file = next(conv_dir.glob("*Test-Conversation-1*"))
+    fid = conn.execute("SELECT id FROM files WHERE path = ?", (str(conv_file),)).fetchone()[0]
+    conn.execute("UPDATE file_texts SET texts = ? WHERE file_id = ?",
+                 (json.dumps("a bare string, not a list"), fid))
+    conn.commit()
+    conn.close()
+
+    out = _assert_index_matches_scan(repo_root, ws, "Python function", "-j")
+    assert "conv-uuid-001" in out
+
+
+@pytest.mark.integration
+def test_renamed_host_reflected_without_reindex(full_archive_workspace, repo_root):
+    # The cc scan path reads host from current config; the index froze it at
+    # index time. Renaming a host in .env without touching any data file must
+    # still surface the NEW host (resolved from path at read time), or the index
+    # path diverges from the scan and breaks --here filtering.
+    ws = full_archive_workspace
+    _search(repo_root, ws, "virtual environment", "-s", "claude-code", "-j")  # build index
+
+    cc_dir = ws / "claude_code_data"
+    env_path = repo_root / ".env"
+    env = env_path.read_text()
+    assert f"CLAUDE_CODE_SOURCES=testhost={cc_dir}" in env
+    env_path.write_text(env.replace(
+        f"CLAUDE_CODE_SOURCES=testhost={cc_dir}",
+        f"CLAUDE_CODE_SOURCES=renamedhost={cc_dir}"))
+
+    out = _assert_index_matches_scan(repo_root, ws, "virtual environment", "-s", "claude-code", "-j")
+    entries = json.loads(out)
+    assert entries and all(e["extra"]["host"] == "renamedhost" for e in entries)
+
+
+@pytest.mark.integration
 def test_verify_passes_on_healthy_corpus(full_archive_workspace, repo_root):
     ws = full_archive_workspace
     result = _run_cli(repo_root, ws, "full_text_search_chats_archive.py", "Python function", "--verify")

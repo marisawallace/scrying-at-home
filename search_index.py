@@ -256,7 +256,11 @@ def preview_from_texts(texts: list[str]) -> tuple[str, bool]:
 def make_llm_item_meta(data: dict, item_type: str, texts: list[str]) -> dict:
     """Item metadata for a claude/chatgpt JSON file, replicating exactly how
     search_item() derives name, updated_at, and the browse preview."""
-    name = data.get("name", "")
+    # `or ""` (not a plain default): an export with "name": null yields None,
+    # which would land in the NOT NULL name_raw column and raise IntegrityError
+    # — misread by refresh() as write contention, silently disabling the index
+    # every run. The scan path coerces the same null via `name.lower() if name`.
+    name = data.get("name") or ""
     updated_at = data.get("updated_at", data["created_at"])
     if item_type == "conversation":
         messages = data.get("chat_messages", [])
@@ -584,13 +588,19 @@ def _read_complete_lines(path: str) -> tuple[list[str], int]:
     """
     with open(path, "rb") as f:
         buf = f.read()
+    # Validate the ENTIRE buffer as strict UTF-8 first — including any torn
+    # trailing line (a partial multibyte char at EOF decodes as invalid). The
+    # scan path opens the whole file strict-UTF-8 and fails it on the first bad
+    # byte anywhere; validating only the complete-line prefix would silently
+    # index a mid-write file the scan path skips wholesale, diverging the two.
+    buf.decode("utf-8")
     last_nl = buf.rfind(b"\n")
     if last_nl == -1:
         return [], 0
     # Split on byte-\n only: str.splitlines() also breaks on  /\x85
     # etc., which are legal inside JSON strings and would shred valid lines.
     # A 0x0a byte is never part of a multibyte UTF-8 sequence, so splitting
-    # before decoding cannot tear a character.
+    # the already-validated buffer cannot tear a character.
     complete = buf[:last_nl]
     lines = [seg.decode("utf-8") for seg in complete.split(b"\n")]
     return lines, last_nl + 1

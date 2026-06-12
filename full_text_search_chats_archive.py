@@ -632,15 +632,38 @@ def name_bonus(name_raw: str, query: str, exact: bool) -> float:
     return 5.0 if hit else 0.0
 
 
+def make_host_resolver(cc_sources: List[Tuple[str, Path]]):
+    """Map a stored cc file path to the host label its source dir carries in the
+    CURRENT config, so a host renamed in .env is reflected without a reindex.
+
+    The scan path always derives host from current config; the index froze it at
+    index time and only rewrites rows when the file's mtime/size changes. Reading
+    the stale stored host would diverge from the scan path and break --here
+    filtering. Paths under no configured source keep their stored host.
+    """
+    dirs = [(Path(d).resolve(), host) for host, d in cc_sources]
+    def resolve(path_str: str, stored_host: str) -> str:
+        p = Path(path_str).resolve()
+        for d, host in dirs:
+            if p == d or d in p.parents:
+                return host
+        return stored_host
+    return resolve
+
+
 def results_from_index_rows(
-    rows: List[dict], query: str, exact: bool, apply_recency_boost: bool
+    rows: List[dict], query: str, exact: bool, apply_recency_boost: bool,
+    host_for_path=None,
 ) -> Tuple[List[SearchResult], set]:
     """Rescore index rows into SearchResults, replicating the scan path exactly.
 
     Returns (results, fallback_paths). A row whose stored texts are missing
-    (LEFT JOIN gave None) or unparseable is never scored as empty: its path
-    joins the fallback set, and main() re-scans that file from disk — the
-    safety valve that keeps stored texts a pure accelerator.
+    (LEFT JOIN gave None), unparseable, or not a JSON array is never scored as
+    empty: its path joins the fallback set, and main() re-scans that file from
+    disk — the safety valve that keeps stored texts a pure accelerator.
+
+    host_for_path, when given, resolves each cc row's host from current config
+    (see make_host_resolver) instead of trusting the value frozen in the index.
     """
     results: List[SearchResult] = []
     fallback: set = set()
@@ -654,6 +677,12 @@ def results_from_index_rows(
         except (ValueError, TypeError):
             fallback.add(row["path"])
             continue
+        if not isinstance(texts, list):
+            # Valid JSON but the wrong shape (string/dict/number): iterating it
+            # in find_matches_in_texts would silently mis-score over characters
+            # or keys. Rescue via the real file instead, like a parse failure.
+            fallback.add(row["path"])
+            continue
 
         matches = find_matches_in_texts(texts, query, exact=exact)
         if not matches:
@@ -663,10 +692,11 @@ def results_from_index_rows(
 
         extra = None
         if row["provider"] == "claude-code":
+            host = host_for_path(row["path"], row["host"]) if host_for_path else row["host"]
             extra = {
                 "cwd": row["cwd"],
                 "git_branch": row["git_branch"],
-                "host": row["host"],
+                "host": host,
             }
         results.append(SearchResult(
             type=row["item_type"],
@@ -722,7 +752,8 @@ def search_cc_with_index(index_conn, cc_sources, query, exact, recency):
     rows = _index_rows_for_query(index_conn, "claude-code", query, exact)
     if rows is None:
         return search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=exact)
-    results, fallback = results_from_index_rows(rows, query, exact, recency)
+    results, fallback = results_from_index_rows(rows, query, exact, recency,
+                                                host_for_path=make_host_resolver(cc_sources))
     if fallback:
         results += search_claude_code_archive(cc_sources, query, apply_recency_boost=recency,
                                               exact=exact, candidates=fallback)
@@ -913,6 +944,7 @@ def result_to_entry(result: SearchResult) -> dict:
         "updated_at": result.updated_at,
         "email": result.email,
         "provider": result.provider,
+        "model": result.model,
         "url": result.get_provider_url(),
         "filepath": str(result.filepath),
         "total_score": result.total_score,
