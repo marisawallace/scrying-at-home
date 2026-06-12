@@ -33,7 +33,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import socket
+import subprocess
+import sys
 from pathlib import Path
 
 # Single sync root - everything lives under here
@@ -292,3 +295,60 @@ def resolve_host_name(config: dict) -> str:
     if explicit:
         return explicit
     return normalize_hostname(socket.gethostname())
+
+
+def _default_open_command(path: Path) -> list[str] | None:
+    """The OS 'open with default app' command for `path`, or None if unknown."""
+    if sys.platform == "darwin":
+        return ["open", str(path)]
+    if sys.platform == "win32":
+        return ["cmd", "/c", "start", "", str(path)]
+    if sys.platform.startswith("linux"):
+        return ["xdg-open", str(path)]
+    return None
+
+
+def open_in_editor(*paths: Path) -> None:
+    """Open one or more files for the user, preferring $VISUAL/$EDITOR.
+
+    Falls back through three tiers so it works whether or not the user has
+    configured an editor:
+      1. $VISUAL or $EDITOR, if set (one invocation, all files; blocks until exit).
+      2. The OS 'open with default app' command, once per file (returns at once).
+      3. No opener available -> print the saved path(s) and exit non-zero.
+
+    The files are assumed to already exist on disk; this only opens them.
+    """
+    targets = [str(p) for p in paths]
+    if not targets:
+        return
+
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if editor:
+        print(f"Opening {len(targets)} file(s) in {editor}...")
+        try:
+            subprocess.run([editor, *targets])
+            return
+        except FileNotFoundError:
+            print(
+                f"$EDITOR '{editor}' not found; trying the system default app...",
+                file=sys.stderr,
+            )
+
+    command = _default_open_command(paths[0])
+    if command and shutil.which(command[0]):
+        print(f"Opening {len(targets)} file(s) with the default app...")
+        try:
+            for target in targets:
+                subprocess.run([*command[:-1], target])
+            return
+        except OSError as e:
+            print(f"Could not open the default app: {e}", file=sys.stderr)
+
+    saved = "\n".join(f"  {t}" for t in targets)
+    print(
+        "No editor available. Set $EDITOR to your preferred editor.\n"
+        f"File(s) saved at:\n{saved}",
+        file=sys.stderr,
+    )
+    sys.exit(1)

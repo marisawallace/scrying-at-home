@@ -12,7 +12,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -25,6 +24,7 @@ from paths import (
     CLAUDE_CODE_HOST_ENV_KEY,
     CLAUDE_CODE_SOURCES_ENV_KEY,
     load_env_file,
+    open_in_editor,
     parse_claude_code_sources,
     resolve_data_dir,
     resolve_env_path,
@@ -1030,10 +1030,8 @@ def run_verify(index_conn, data_dir, cc_sources, query, exact, source) -> int:
     return 1
 
 
-def open_in_editor(results: List[SearchResult], count: int, config: dict):
-    """Open top N results in $EDITOR as markdown files."""
-    editor = os.environ.get("EDITOR", "vim")
-
+def open_results_in_editor(results: List[SearchResult], count: int, config: dict):
+    """Open top N results as markdown files in the user's editor / default app."""
     if count > len(results):
         count = len(results)
 
@@ -1091,16 +1089,7 @@ def open_in_editor(results: List[SearchResult], count: int, config: dict):
         print("No files to open.")
         return
 
-    # Open markdown files in editor
-    print(f"Opening {len(markdown_files)} file(s) in {editor}...")
-    try:
-        subprocess.run([editor] + markdown_files)
-    except FileNotFoundError:
-        print(f"Error: Editor '{editor}' not found. Set $EDITOR to your preferred editor.", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error opening editor: {e}", file=sys.stderr)
-        sys.exit(1)
+    open_in_editor(*(Path(f) for f in markdown_files))
 
 
 def main():
@@ -1389,7 +1378,7 @@ Examples:
         if args.json:
             print("Warning: Cannot use -o/--open with -j/--json", file=sys.stderr)
         else:
-            open_in_editor(results, args.open, config)
+            open_results_in_editor(results, args.open, config)
 
 
 if __name__ == "__main__":

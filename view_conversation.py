@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from paths import resolve_data_dir, resolve_local_views_dir, parse_claude_code_sources, resolve_env_path, load_env_file
+from paths import resolve_data_dir, resolve_local_views_dir, parse_claude_code_sources, resolve_env_path, load_env_file, open_in_editor
 
 CLAUDE_CHAT_URL_PREFIX = "https://claude.ai/chat/"
 
@@ -761,19 +761,7 @@ Examples:
     # Open file
     if not args.no_open:
         if args.format == "markdown":
-            # Open markdown in editor
-            editor = os.environ.get("EDITOR", "vim")
-            print(f"Opening in {editor}...")
-            try:
-                subprocess.run([editor, str(output_path)])
-            except FileNotFoundError:
-                print(f"Error: Editor '{editor}' not found. Set $EDITOR to your preferred editor.", file=sys.stderr)
-                print(f"File saved at: {output_path}")
-                sys.exit(1)
-            except Exception as e:
-                print(f"Error opening editor: {e}", file=sys.stderr)
-                print(f"File saved at: {output_path}")
-                sys.exit(1)
+            open_in_editor(output_path)
         else:  # html
             # Open HTML in browser
             print(f"Opening in browser...")
