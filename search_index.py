@@ -43,6 +43,11 @@ import claude_code_parser as ccp
 SCHEMA_VERSION = 4
 RECONCILE_BATCH = 200
 
+# Below this many files a refresh is fast enough that progress output is just
+# noise; we stay silent (matches the old "Indexing ..." gate).
+PROGRESS_MIN_FILES = 50
+PROGRESS_BAR_WIDTH = 30
+
 # Modules whose source determines what ends up in the index: the extractors,
 # the metadata derivation, and this module itself. Their bytes are hashed
 # into the schema identity (see schema_identity) so that ANY change to
@@ -650,6 +655,18 @@ def _index_cc_file(conn: sqlite3.Connection, fs: FileStat) -> Optional[str]:
     return None
 
 
+def render_progress_bar(done: int, total: int, width: int = PROGRESS_BAR_WIDTH) -> str:
+    """Render a single-line progress bar, e.g. '[######----] 60/100 (60%)'.
+
+    Pure: builds the string for `done` of `total` items. `total` of 0 reads
+    as complete (an empty plan has nothing left to do).
+    """
+    frac = 1.0 if total <= 0 else max(0.0, min(1.0, done / total))
+    filled = round(frac * width)
+    bar = "#" * filled + "-" * (width - filled)
+    return f"[{bar}] {done}/{total} ({frac * 100:.0f}%)"
+
+
 def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
               extract_llm_texts: Callable[[dict, str, str], list]) -> list:
     """Apply a ReconcilePlan in batched transactions (interrupt-safe: a
@@ -660,7 +677,11 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
     about — on every run until fixed or removed.
     """
     total = len(plan.new) + len(plan.rewritten) + len(plan.removed)
-    if total > 50:
+    # Animate a bar only on an interactive stderr; otherwise (pipes, logs) the
+    # \r repaint would spam, so fall back to a single static line.
+    show_progress = total >= PROGRESS_MIN_FILES
+    animate = show_progress and sys.stderr.isatty()
+    if show_progress and not animate:
         print(f"Indexing {total} archive file(s)...", file=sys.stderr)
 
     def ops():
@@ -673,6 +694,7 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
 
     failed = []
     pending = 0
+    done = 0
     conn.execute("BEGIN IMMEDIATE")
     for op, fs, ix in ops():
         if op == "remove":
@@ -682,12 +704,18 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
             failed.append(_index_file(conn, fs, extract_llm_texts))
         else:
             failed.append(_index_file(conn, fs, extract_llm_texts))
+        done += 1
+        if animate:
+            print(f"\rIndexing {render_progress_bar(done, total)}",
+                  end="", file=sys.stderr, flush=True)
         pending += 1
         if pending >= RECONCILE_BATCH:
             conn.commit()
             conn.execute("BEGIN IMMEDIATE")
             pending = 0
     conn.commit()
+    if animate:
+        print(file=sys.stderr)  # terminate the bar's line
     return [path for path in failed if path is not None]
 
 

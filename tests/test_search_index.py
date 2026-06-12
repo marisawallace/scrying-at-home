@@ -45,6 +45,30 @@ def test_fts_query_empty():
 
 
 # ---------------------------------------------------------------------------
+# render_progress_bar
+# ---------------------------------------------------------------------------
+
+def test_progress_bar_empty():
+    assert si.render_progress_bar(0, 10, width=10) == "[----------] 0/10 (0%)"
+
+
+def test_progress_bar_full():
+    assert si.render_progress_bar(10, 10, width=10) == "[##########] 10/10 (100%)"
+
+
+def test_progress_bar_half():
+    assert si.render_progress_bar(5, 10, width=10) == "[#####-----] 5/10 (50%)"
+
+
+def test_progress_bar_zero_total_reads_as_complete():
+    assert si.render_progress_bar(0, 0, width=10) == "[##########] 0/0 (100%)"
+
+
+def test_progress_bar_clamps_overshoot():
+    assert si.render_progress_bar(15, 10, width=10) == "[##########] 15/10 (100%)"
+
+
+# ---------------------------------------------------------------------------
 # searchable_body / preview_from_texts
 # ---------------------------------------------------------------------------
 
