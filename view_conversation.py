@@ -483,14 +483,15 @@ def project_to_html(data: dict, provider: str = "") -> str:
     return _html_page(name, source, "".join(metadata_parts), "".join(doc_parts))
 
 
-def claude_code_to_markdown(filepath: Path) -> str:
-    """Convert a Claude Code JSONL session to Markdown."""
-    import claude_code_parser as ccp
+def transcript_to_markdown(metadata: dict, turns: list, resume_shell: str) -> str:
+    """Render a parsed local-CLI transcript (Claude Code, Codex, …) to Markdown.
 
-    lines = ccp.parse_jsonl(filepath)
-    metadata = ccp.extract_session_metadata(lines)
-    turns = ccp.extract_conversation_turns(lines)
-
+    Provider-agnostic: takes the parser output (`metadata` from
+    extract_session_metadata, `turns` from extract_conversation_turns) plus the
+    bare resume command (e.g. "claude -r <id>"), which is wrapped here in the
+    shared `cd <cwd> && …` form. The thin per-provider wrappers below supply
+    those by parsing the JSONL with their own parser module.
+    """
     parts = []
 
     # Header
@@ -501,8 +502,7 @@ def claude_code_to_markdown(filepath: Path) -> str:
         parts.append(f"**Branch:** `{metadata['git_branch']}`  ")
     parts.append(f"**Created:** {format_timestamp(metadata['created_at'])}  ")
     parts.append(f"**Updated:** {format_timestamp(metadata['updated_at'])}  ")
-    resume_cmd = (f"cd {shlex.quote(metadata['cwd'])} "
-                  f"&& {providers.resume_shell('claude-code', metadata['session_id'])}")
+    resume_cmd = f"cd {shlex.quote(metadata['cwd'])} && {resume_shell}"
     parts.append(f"**Resume:** `{resume_cmd}`  ")
     parts.append("\n---\n")
 
@@ -527,22 +527,20 @@ def claude_code_to_markdown(filepath: Path) -> str:
     return "\n".join(parts)
 
 
-def claude_code_to_html(filepath: Path) -> str:
-    """Convert a Claude Code JSONL session to HTML format with styling."""
-    import claude_code_parser as ccp
+def transcript_to_html(metadata: dict, turns: list, source_label: str,
+                       resume_shell: str) -> str:
+    """Render a parsed local-CLI transcript to HTML (see transcript_to_markdown).
 
-    lines = ccp.parse_jsonl(filepath)
-    metadata = ccp.extract_session_metadata(lines)
-    turns = ccp.extract_conversation_turns(lines)
-
+    `source_label` is the raw provider label (escaped here); `resume_shell` is
+    the bare resume command, wrapped in the shared `cd <cwd> && …` form.
+    """
     name = html.escape(metadata["name"])
-    source = html.escape(_SOURCE_LABELS["claude-code"])
+    source = html.escape(source_label)
     session = html.escape(metadata["session_id"])
     cwd = html.escape(metadata["cwd"])
     created = time_tag(metadata["created_at"], "localtime")
     updated = time_tag(metadata["updated_at"], "localtime")
-    resume_cmd = (f"cd {shlex.quote(metadata['cwd'])} "
-                  f"&& {providers.resume_shell('claude-code', metadata['session_id'])}")
+    resume_cmd = f"cd {shlex.quote(metadata['cwd'])} && {resume_shell}"
 
     metadata_parts = [f"""
             <div><strong>Session:</strong> <code>{session}</code></div>
@@ -569,6 +567,30 @@ def claude_code_to_html(filepath: Path) -> str:
 
     return _html_page(name, source, "".join(metadata_parts),
                        "".join(messages_parts))
+
+
+def claude_code_to_markdown(filepath: Path) -> str:
+    """Parse a Claude Code JSONL session and render it to Markdown."""
+    import claude_code_parser as ccp
+
+    lines = ccp.parse_jsonl(filepath)
+    metadata = ccp.extract_session_metadata(lines)
+    turns = ccp.extract_conversation_turns(lines)
+    return transcript_to_markdown(
+        metadata, turns,
+        providers.resume_shell("claude-code", metadata["session_id"]))
+
+
+def claude_code_to_html(filepath: Path) -> str:
+    """Parse a Claude Code JSONL session and render it to HTML."""
+    import claude_code_parser as ccp
+
+    lines = ccp.parse_jsonl(filepath)
+    metadata = ccp.extract_session_metadata(lines)
+    turns = ccp.extract_conversation_turns(lines)
+    return transcript_to_html(
+        metadata, turns, _SOURCE_LABELS["claude-code"],
+        providers.resume_shell("claude-code", metadata["session_id"]))
 
 
 def markdown_body(content: str) -> str:
