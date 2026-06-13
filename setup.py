@@ -67,8 +67,8 @@ ENTRY_SCRIPTS = (
 # CANDIDATE_DOTFILES (the preference-ordered dotfile/shell pairs) lives in
 # paths.py so migration 002 can reuse it for current-shell alias detection.
 
-# Fallback names to suggest when the default "cs" conflicts.
-BACKUP_ALIAS_NAMES = ("csr", "cls", "csearch", "chats", "cax")
+# Fallback names to suggest when the default conflicts.
+BACKUP_ALIAS_NAMES = ("scry", "sah")
 
 ALIAS_BLOCK_HEADER = "# scrying-at-home aliases"
 
@@ -441,7 +441,7 @@ def _choose_alias_name(
     def conflicts(name: str) -> bool:
         return detect_alias_conflict(own_stripped, name, shutil.which(name))
 
-    candidates = ["cs", *BACKUP_ALIAS_NAMES]
+    candidates = ["sy", *BACKUP_ALIAS_NAMES]
     conflicting = {c for c in candidates if conflicts(c)}
     default = pick_default_alias(candidates, conflicting)
 
