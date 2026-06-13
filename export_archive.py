@@ -34,6 +34,7 @@ from typing import List, Sequence, Tuple
 import providers
 from paths import load_env_file, parse_claude_code_sources, resolve_data_dir, resolve_env_path
 from full_text_search_chats_archive import (
+    SOURCE_CHOICES,
     SearchResult,
     search_archive,
     search_claude_code_archive,
@@ -189,7 +190,7 @@ Examples:
         help="Directory to write the export into (default: ./markdown-export)",
     )
     parser.add_argument(
-        "-s", "--source", choices=["all", "llm", "claude-code"], default="all",
+        "-s", "--source", choices=SOURCE_CHOICES, default="all",
         help="Which source(s) to export (default: all)",
     )
     parser.add_argument(

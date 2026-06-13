@@ -36,6 +36,13 @@ from paths import (
 )
 
 
+# Accepted values for the -s/--source filter, single source of truth (shared
+# with export_archive). "all" plus one token per searchable source family; a new
+# transcript source (e.g. codex) is added here and consumed everywhere choices
+# are offered. Distinct from a provider id: "llm" bundles claude + chatgpt.
+SOURCE_CHOICES = ["all", "llm", "claude-code"]
+
+
 # ANSI color codes
 class Colors:
     RESET = "\033[0m"
@@ -982,18 +989,27 @@ def verify_diff(index_entries: List[dict], scan_entries: List[dict]) -> str:
 def gather_query_results(use_index, index_conn, data_dir, cc_sources, query, exact, source):
     """Combined query results for the selected sources, recency boost disabled.
     use_index picks the index-backed rescore path or the full scan; --verify
-    runs both and compares."""
+    runs both and compares.
+
+    Sources are table-driven so a new transcript source is one extra row: each
+    entry is (-s token, index-backed gather, full-scan gather). A source whose
+    backing store is unconfigured (cc_sources empty) contributes no row.
+    """
+    query_sources = [
+        ("llm",
+         lambda: search_llm_with_index(index_conn, data_dir, query, exact, False),
+         lambda: search_archive(data_dir, query, apply_recency_boost=False, exact=exact)),
+    ]
+    if cc_sources:
+        query_sources.append(
+            ("claude-code",
+             lambda: search_cc_with_index(index_conn, cc_sources, query, exact, False),
+             lambda: search_claude_code_archive(cc_sources, query, apply_recency_boost=False, exact=exact)))
+
     results: List[SearchResult] = []
-    if source in ("all", "llm"):
-        if use_index:
-            results += search_llm_with_index(index_conn, data_dir, query, exact, False)
-        else:
-            results += search_archive(data_dir, query, apply_recency_boost=False, exact=exact)
-    if source in ("all", "claude-code") and cc_sources:
-        if use_index:
-            results += search_cc_with_index(index_conn, cc_sources, query, exact, False)
-        else:
-            results += search_claude_code_archive(cc_sources, query, apply_recency_boost=False, exact=exact)
+    for key, index_gather, scan_gather in query_sources:
+        if source in ("all", key):
+            results += index_gather() if use_index else scan_gather()
     return results
 
 
@@ -1149,7 +1165,7 @@ Examples:
 
     parser.add_argument(
         "-s", "--source",
-        choices=["all", "llm", "claude-code"],
+        choices=SOURCE_CHOICES,
         default="all",
         help="Filter by source: all (default), llm (claude.ai/chatgpt), claude-code"
     )
