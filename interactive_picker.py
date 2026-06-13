@@ -42,14 +42,11 @@ def _strip_ansi(s: str) -> str:
 
 def _provider_label(result) -> tuple[str, str]:
     """Returns (label, prompt_toolkit style string)."""
-    if result.provider == "claude-code":
-        return "CLAUDE CODE", "fg:#ff8c00 bold"
-    if result.provider == "chatgpt":
-        return "CHATGPT", "fg:ansigreen bold"
-    if result.provider == "claude":
-        return "CLAUDE.AI", "fg:ansicyan bold"
-    if result.provider == "gemini":
-        return "GEMINI", "fg:ansiblue bold"
+    p = providers.get(result.provider)
+    if p is not None:
+        return p.badge_label, p.tui_style
+    # Unknown provider: fall back to the item type (this is type-derived, not
+    # provider-derived, so it stays here rather than in the registry).
     return result.type.upper(), "fg:ansimagenta bold"
 
 
@@ -230,10 +227,11 @@ class ResultPicker:
 
         @kb.add("h")
         def _(event):
-            # HTML rendering is supported for the claude.ai, chatgpt, and
-            # claude-code providers; ignore the key for others rather than
-            # exiting.
-            if self.results[self.index].provider in ("claude", "chatgpt", "claude-code"):
+            # HTML rendering is gated on the provider's html_supported flag
+            # (claude.ai, chatgpt, claude-code today); ignore the key for
+            # others rather than exiting.
+            p = providers.get(self.results[self.index].provider)
+            if p is not None and p.html_supported:
                 self.action = "view-html"
                 event.app.exit(result=self.results[self.index])
 
@@ -305,10 +303,12 @@ def act_on_choice(result, current_host: str, demo: bool = False) -> int:
         except KeyboardInterrupt:
             return 130
 
-    # claude.ai / chatgpt — open the URL. Any other provider (e.g. gemini, which
-    # has no resumable thread URL) has no open action: refuse rather than handing
-    # webbrowser the "Unknown provider: …" sentinel from get_provider_url().
-    if result.provider not in ("claude", "chatgpt"):
+    # Web providers with a thread URL (claude.ai, chatgpt) — open it. Any other
+    # provider (e.g. gemini, which has no resumable thread URL) has no open
+    # action: refuse rather than handing webbrowser the "Unknown provider: …"
+    # sentinel from get_provider_url().
+    p = providers.get(result.provider)
+    if p is None or not p.browser_openable:
         print(f"No open action for provider '{result.provider}'.", file=sys.stderr)
         return 1
     url = result.get_provider_url()

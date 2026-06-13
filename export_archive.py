@@ -31,6 +31,7 @@ from datetime import date
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
+import providers
 from paths import load_env_file, parse_claude_code_sources, resolve_data_dir, resolve_env_path
 from full_text_search_chats_archive import (
     SearchResult,
@@ -40,11 +41,10 @@ from full_text_search_chats_archive import (
 from sync_local_chats_archive import build_filename
 from view_conversation import render_conversation
 
-PROVIDER_LABELS = {
-    "claude": "claude.ai",
-    "chatgpt": "chatgpt",
-    "claude-code": "claude-code",
-}
+# Friendly per-provider labels for the index headings, derived from the
+# provider registry (shared with analytics.PROVIDER_LABELS). build_index keeps
+# the .get(provider, provider) passthrough for any unregistered provider.
+PROVIDER_LABELS = {pid: p.analytics_label for pid, p in providers.all_providers().items()}
 
 
 # ---------------------------------------------------------------------------

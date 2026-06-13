@@ -312,12 +312,10 @@ def render_markdown(text: str) -> str:
     return _markdown_renderer()(text)
 
 
-# Human-facing label for the conversation's source provider.
-_SOURCE_LABELS = {
-    "claude": "claude.ai",
-    "chatgpt": "chatgpt.com",
-    "claude-code": "Claude Code",
-}
+# Human-facing label for the conversation's source provider, derived from the
+# provider registry. Lookups keep a .get(provider, provider) passthrough for
+# any provider not in the registry.
+_SOURCE_LABELS = {pid: p.source_label for pid, p in providers.all_providers().items()}
 
 
 def _html_page(title: str, source: str, metadata_html: str,

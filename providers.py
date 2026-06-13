@@ -48,7 +48,11 @@ class Provider:
     source_label: str     # viewer _SOURCE_LABELS / HTML topbar, e.g. "Claude Code"
     kind: str             # "web" (has a URL, opened in a browser) |
                           # "local-cli" (has cwd/host, resumed via a CLI)
-    html_supported: bool  # may the conversation be rendered to HTML?
+    html_supported: bool  # may the conversation be rendered to HTML locally?
+    browser_openable: bool  # is there a thread URL to open in a browser? A
+                          # distinct axis from html_supported: a local-cli
+                          # transcript (claude-code, codex) renders to HTML but
+                          # has no browsable URL; gemini has neither.
     account_slot: str     # meaning of the items.email column / SearchResult.email:
                           # "email" (web account) | "project-slug" (local-cli)
     resume_argv: tuple[str, ...] = field(default=())
@@ -68,6 +72,7 @@ _PROVIDERS: dict[str, Provider] = {
         source_label="claude.ai",
         kind="web",
         html_supported=True,
+        browser_openable=True,
         account_slot="email",
     ),
     "chatgpt": Provider(
@@ -79,6 +84,7 @@ _PROVIDERS: dict[str, Provider] = {
         source_label="chatgpt.com",
         kind="web",
         html_supported=True,
+        browser_openable=True,
         account_slot="email",
     ),
     "claude-code": Provider(
@@ -90,6 +96,7 @@ _PROVIDERS: dict[str, Provider] = {
         source_label="Claude Code",
         kind="local-cli",
         html_supported=True,
+        browser_openable=False,
         account_slot="project-slug",
         resume_argv=("claude", "-r"),
     ),
@@ -106,6 +113,7 @@ _PROVIDERS: dict[str, Provider] = {
         source_label="gemini",
         kind="web",
         html_supported=False,
+        browser_openable=False,
         account_slot="email",
     ),
 }
@@ -119,6 +127,15 @@ def get(provider_id: str) -> Optional[Provider]:
     unrecognised provider degrades gracefully rather than raising.
     """
     return _PROVIDERS.get(provider_id)
+
+
+def all_providers() -> dict[str, Provider]:
+    """All registered providers, keyed by id (a copy; callers must not mutate).
+
+    Lets a layer derive its own context-specific label map in one comprehension
+    (e.g. {id: p.analytics_label}) instead of hand-maintaining a parallel dict.
+    """
+    return dict(_PROVIDERS)
 
 
 def resume_cli_args(provider: str, session_id: str) -> list[str]:

@@ -21,16 +21,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple
 
+import providers
+
 if TYPE_CHECKING:  # avoid a circular import at runtime
     from full_text_search_chats_archive import SearchResult
 
 
-PROVIDER_LABELS = {
-    "claude": "claude.ai",
-    "chatgpt": "chatgpt",
-    "claude-code": "claude-code",
-    "gemini": "gemini",
-}
+# Friendly per-provider labels, derived from the provider registry so this
+# layer never hand-maintains its own parallel map. count_by keeps the
+# .get(provider, provider) passthrough for any provider not in the registry.
+PROVIDER_LABELS = {pid: p.analytics_label for pid, p in providers.all_providers().items()}
 
 # Monday-first, to match datetime.weekday() (Monday == 0).
 WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

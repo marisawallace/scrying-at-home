@@ -17,24 +17,24 @@ import providers
 
 
 # (id, badge_label, tui_style, ansi_color, analytics_label, source_label,
-#  kind, html_supported, account_slot, resume_argv)
+#  kind, html_supported, browser_openable, account_slot, resume_argv)
 _TABLE = [
     ("claude", "CLAUDE.AI", "fg:ansicyan bold", "", "claude.ai", "claude.ai",
-     "web", True, "email", ()),
+     "web", True, True, "email", ()),
     ("chatgpt", "CHATGPT", "fg:ansigreen bold", "", "chatgpt", "chatgpt.com",
-     "web", True, "email", ()),
+     "web", True, True, "email", ()),
     ("claude-code", "CLAUDE CODE", "fg:#ff8c00 bold", "\033[38;5;208m",
-     "claude-code", "Claude Code", "local-cli", True, "project-slug",
+     "claude-code", "Claude Code", "local-cli", True, False, "project-slug",
      ("claude", "-r")),
     ("gemini", "GEMINI", "fg:ansiblue bold", "", "gemini", "gemini",
-     "web", False, "email", ()),
+     "web", False, False, "email", ()),
 ]
 
 
 @pytest.mark.parametrize("row", _TABLE, ids=[r[0] for r in _TABLE])
 def test_descriptor_values(row):
     (pid, badge, tui, ansi, analytics_label, source_label, kind,
-     html, account_slot, resume_argv) = row
+     html, browser_openable, account_slot, resume_argv) = row
     p = providers.get(pid)
     assert p is not None
     assert p.id == pid
@@ -45,6 +45,7 @@ def test_descriptor_values(row):
     assert p.source_label == source_label
     assert p.kind == kind
     assert p.html_supported is html
+    assert p.browser_openable is browser_openable
     assert p.account_slot == account_slot
     assert p.resume_argv == resume_argv
 

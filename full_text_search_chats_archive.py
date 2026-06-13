@@ -868,22 +868,17 @@ def print_results(results: List[SearchResult], query: str, exact: bool = False, 
     # Reverse to show best results last (most visible at bottom of terminal)
     results.reverse()
     for i, result in enumerate(results, 1):
-        # Header
-        type_label = result.type.upper()
+        # Header: badge label + colour from the provider registry. The
+        # type-derived colour (cyan conversation / magenta project) is the
+        # fallback used whenever the provider declares no colour override
+        # (ansi_color == "") and for unknown providers.
         type_color = Colors.BRIGHT_CYAN if result.type == "conversation" else Colors.BRIGHT_MAGENTA
-
-        if result.provider == "claude-code":
-            type_label = "CLAUDE CODE"
-            type_color = Colors.ORANGE
-
-        if result.provider == "chatgpt":
-            type_label = "CHATGPT"
-
-        if result.provider == "claude":
-            type_label = "CLAUDE.AI"
-
-        if result.provider == "gemini":
-            type_label = "GEMINI"
+        p = providers.get(result.provider)
+        if p is not None:
+            type_label = p.badge_label
+            type_color = p.ansi_color or type_color
+        else:
+            type_label = result.type.upper()
 
         print(f"{Colors.BOLD}{type_color}[{type_label}]{Colors.RESET} {Colors.BOLD}{result.name}{Colors.RESET}")
         # Skip the UUID line for claude-code results: the UUID is already visible
