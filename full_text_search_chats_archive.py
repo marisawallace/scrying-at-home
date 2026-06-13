@@ -85,23 +85,16 @@ class SearchResult:
     model: str = ""  # Model that produced the conversation (raw provider id; "" if unknown)
 
     def get_provider_url(self) -> str:
-        """Generate provider URL or resume command for this item."""
-        if self.provider == "claude":
-            if self.type == "conversation":
-                return f"https://claude.ai/chat/{self.uuid}"
-            else:  # project
-                return f"https://claude.ai/project/{self.uuid}"
-        elif self.provider == "chatgpt":
-            # ChatGPT only has conversations, no projects
-            return f"https://chatgpt.com/c/{self.uuid}"
-        elif self.provider == "claude-code":
-            extra = self.extra or {}
-            cwd = extra.get("cwd", "~")
-            host = extra.get("host", "")
-            prefix = f"[{host}] " if host else ""
-            return f"{prefix}pushd {shlex.quote(cwd)} && claude -r {self.uuid}"
-        else:
-            return f"Unknown provider: {self.provider}"
+        """Generate provider URL or resume command for this item.
+
+        Thin shim over the leaf providers.provider_url, passing the primitives
+        it needs (the registry can't see SearchResult without an import cycle).
+        """
+        extra = self.extra or {}
+        return providers.provider_url(
+            self.provider, self.type, self.uuid,
+            cwd=extra.get("cwd", "~"), host=extra.get("host", ""),
+        )
 
 
 def score_match(match_lower: str, query_lower: str) -> float:
