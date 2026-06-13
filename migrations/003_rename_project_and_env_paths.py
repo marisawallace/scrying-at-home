@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Migration 003: Rename the project directory, .env paths, and shell aliases.
+Migration 003: Rename the project directory, .env paths, aliases, and settings.
 
 The project was renamed clauding-at-home -> scrying-at-home. Existing clones
 still live in a directory named `clauding-at-home/`, the shell aliases that
 point at it break the moment that directory is renamed, AND — for anyone who
 put absolute paths in `.env` — the `LLM_DATA_DIR` / `ARCHIVED_EXPORTS_DIR` /
 `LOCAL_VIEWS_DIR` / `CLAUDE_CODE_SOURCES` / `SEARCH_INDEX_DB` values, plus the
-on-disk directories they reference, also still carry the old name.
+on-disk directories they reference, also still carry the old name. Claude Code
+settings can likewise pin the old path (e.g. a Stop/SessionEnd hook `command`
+that runs `claude_code_hook.py` out of the repo dir).
 
 This migration, in one pass:
 
@@ -21,6 +23,13 @@ This migration, in one pass:
      to `scrying-at-home`, at the file's post-move location.
   3. Rewrites the alias lines in your shell rc file(s) that reference the old
      directory name, plus the `# clauding-at-home aliases` block header.
+  4. Rewrites `clauding-at-home` path components inside your Claude Code
+     settings (`~/.claude/settings.json` and `settings.local.json`) — e.g. hook
+     `command` paths — editing the raw text so JSON formatting is untouched.
+
+The `.env` and settings rewrites are both gated on the actual move plan: a path
+is rewritten only when a real directory move covers it, so the text never names
+a directory that wasn't moved.
 
 A path is in scope only when one of its `/`-separated components is *exactly*
 `clauding-at-home`; siblings like `clauding-at-home-backup` are left alone. All
@@ -487,6 +496,96 @@ def rewrite_env_paths(text: str, *, is_rewritable=lambda _value: True) -> EnvRew
 
 
 # --------------------------------------------------------------------------
+# Claude settings (settings.json) value rewrite
+#
+# Settings files embed absolute paths inside JSON string values — most notably
+# a Stop/SessionEnd hook `command` that runs claude_code_hook.py out of the repo
+# dir. They live under ~/.claude, outside any directory this migration moves, so
+# (like the alias dotfiles) they're rewritten in place. We edit the raw text
+# rather than reserialize the JSON, so formatting, key order, and any trailing
+# comments survive untouched and only the path component changes.
+# --------------------------------------------------------------------------
+
+# Characters that bound a path token inside a config string value. A hook
+# command is `interpreter /path/to/clauding-at-home/hook.py [args]`, so the path
+# is delimited by whitespace and the surrounding JSON quotes.
+_PATH_TOKEN_BOUNDARIES = frozenset({" ", "\t", "\n", "\r", '"', "'"})
+
+
+@dataclass(frozen=True)
+class ConfigRewrite:
+    text: str                          # rewritten config text
+    changes: list[tuple[str, str]]     # (before, after) for lines we edited
+    kept_lines: list[str]              # lines mentioning OLD_NAME that no move covers
+
+
+def enclosing_rename_point(line: str, match: re.Match) -> str:
+    """The absolute path ending at this OLD_NAME match's component. Pure.
+
+    Walks left from the match to the start of the surrounding path token
+    (bounded by whitespace or a JSON quote) and returns everything from there up
+    to and including the matched `clauding-at-home` component — i.e. the
+    directory a physical move would rename. Used to gate the rewrite on the move
+    plan, exactly as .env values are.
+    """
+    i = match.start()
+    while i > 0 and line[i - 1] not in _PATH_TOKEN_BOUNDARIES:
+        i -= 1
+    return line[i:match.end()]
+
+
+def rewrite_config_paths(
+    text: str, *, is_rewritable=lambda _point: True
+) -> ConfigRewrite:
+    """Rename OLD_NAME path components inside a JSON config's string values.
+
+    Pure given the injected `is_rewritable` predicate; the shell supplies the
+    impure one (config_point_is_rewritable) that consults the move plan,
+    mirroring how rewrite_env_paths takes value_is_rewritable. Each OLD_NAME
+    segment (matched component-aware, so `clauding-at-home-backup` siblings are
+    left alone) is rewritten only when its enclosing path token is covered by a
+    planned move; an occurrence nothing moved is left verbatim and reported in
+    kept_lines, keeping the config in lockstep with disk the same way .env is.
+    The raw text is edited, never reserialized, so JSON formatting is preserved.
+    """
+    seg = _segment_re()
+    new_lines: list[str] = []
+    changes: list[tuple[str, str]] = []
+    kept_lines: list[str] = []
+    for raw in text.splitlines():
+        if not seg.search(raw):
+            new_lines.append(raw)
+            continue
+        updated = seg.sub(
+            lambda m, line=raw: NEW_NAME
+            if is_rewritable(enclosing_rename_point(line, m))
+            else m.group(0),
+            raw,
+        )
+        new_lines.append(updated)
+        if updated != raw:
+            changes.append((raw, updated))
+        elif OLD_NAME in raw:
+            kept_lines.append(raw)
+    out = "\n".join(new_lines)
+    if text.endswith("\n"):
+        out += "\n"
+    return ConfigRewrite(out, changes, kept_lines)
+
+
+def config_point_is_rewritable(point: str, movable_origins: list[Path]) -> bool:
+    """True when a config path token's OLD_NAME component maps to a planned move.
+
+    Impure (resolves parent symlinks). The point — an absolute path ending at a
+    clauding-at-home component — is rewritten only if, in the move planner's own
+    symlink-resolved coordinates, it lives at or under an OK/dangling move origin
+    (never a refused one). Mirrors value_is_rewritable for .env.
+    """
+    resolved = _collapse_parent_symlinks(Path(point).expanduser())
+    return any(_is_under_or_eq(resolved, origin) for origin in movable_origins)
+
+
+# --------------------------------------------------------------------------
 # Cloud-sync heuristics and manifest text (pure)
 # --------------------------------------------------------------------------
 
@@ -531,6 +630,17 @@ def find_repo_root() -> Path | None:
             return candidate
         candidate = candidate.parent
     return None
+
+
+def _claude_settings_files() -> list[Path]:
+    """Existing user-level Claude Code settings files. Impure (stats $HOME).
+
+    These live under ~/.claude, outside any directory this migration moves, so
+    they're rewritten in place like the alias dotfiles.
+    """
+    base = Path.home() / ".claude"
+    names = ("settings.json", "settings.local.json")
+    return [base / n for n in names if (base / n).is_file()]
 
 
 def _print_change(before: str, after: str) -> None:
@@ -643,7 +753,7 @@ def _final_repo_root(repo_root: Path, executed: list[Move]) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Migration 003: Rename the project dir, .env paths, and aliases",
+        description="Migration 003: Rename the project dir, .env paths, aliases, and settings",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -719,6 +829,25 @@ def main() -> None:
         others = other_old_name_lines(text, ALIAS_BLOCK_HEADER)
         if others:
             alias_other.append((path, others))
+
+    # --- Plan the Claude settings rewrites (same move-plan gate as .env) ---
+    config_planned: list[tuple[Path, str, list[tuple[str, str]]]] = []
+    config_kept: list[tuple[Path, list[str]]] = []
+    for cfg_path in _claude_settings_files():
+        try:
+            cfg_text = cfg_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            print(f"  {YELLOW}!{RESET} Could not read {_tilde(cfg_path)} — "
+                  f"leaving it untouched.")
+            continue
+        rew = rewrite_config_paths(
+            cfg_text,
+            is_rewritable=lambda point: config_point_is_rewritable(point, movable_origins),
+        )
+        if rew.changes:
+            config_planned.append((cfg_path, rew.text, rew.changes))
+        if rew.kept_lines:
+            config_kept.append((cfg_path, rew.kept_lines))
 
     # ----------------------------------------------------------------------
     # Preview
@@ -812,6 +941,24 @@ def main() -> None:
             for ln in lines:
                 print(f"    {DIM}{ln.strip()}{RESET}")
 
+    # --- Claude settings diff ---
+    print(f"\n{BOLD}Claude settings:{RESET}")
+    if config_planned:
+        for path, _new_text, changes in config_planned:
+            print(f"  {CYAN}{_tilde(path)}{RESET}")
+            for before, after in changes:
+                _print_change(before, after)
+    else:
+        print(f"  {DIM}No settings paths reference {OLD_NAME!r} — nothing to "
+              f"rewrite.{RESET}")
+    if config_kept:
+        print(f"  {YELLOW}Left as-is (no directory move covers them — the move was "
+              f"refused, or a symlink resolves the path elsewhere):{RESET}")
+        for path, lines in config_kept:
+            print(f"    {DIM}{_tilde(path)}{RESET}")
+            for ln in lines:
+                print(f"      {DIM}{ln.strip()}{RESET}")
+
     # --- Hard conflict: abort with nothing done ---
     if conflicts:
         print(f"\n{RED}Aborting: a destination directory already exists "
@@ -819,7 +966,7 @@ def main() -> None:
         sys.exit(1)
 
     has_moves = bool(ok)
-    has_edits = bool(env_rewrite.changes or alias_planned)
+    has_edits = bool(env_rewrite.changes or alias_planned or config_planned)
 
     # --- Nothing to do? (prose residue is expected and still reported) ---
     if not has_moves and not has_edits and not dangling:
@@ -886,7 +1033,7 @@ def main() -> None:
                 sys.exit(0)
         else:
             if not _prompt_yn(
-                "Proceed with the .env / alias edits above?", default=True
+                "Proceed with the edits above?", default=True
             ):
                 print("Aborted.")
                 sys.exit(0)
@@ -930,6 +1077,12 @@ def main() -> None:
         path.write_text(new_text, encoding="utf-8")
         print(f"  {GREEN}✓{RESET} Updated aliases in {_tilde(path)}")
 
+    # --- Rewrite Claude settings (also under $HOME, unaffected by the moves) ---
+    for path, new_text, _changes in config_planned:
+        _backup(path)
+        path.write_text(new_text, encoding="utf-8")
+        print(f"  {GREEN}✓{RESET} Updated paths in {_tilde(path)}")
+
     # ----------------------------------------------------------------------
     # Done
     # ----------------------------------------------------------------------
@@ -951,6 +1104,11 @@ def main() -> None:
     if alias_planned:
         sources = "\n".join(f"      source {_tilde(p)}" for p, _, _ in alias_planned)
         tips.append(f"  Reload your updated aliases (or open a new shell):\n{sources}")
+    if config_planned:
+        tips.append(
+            "  Claude Code settings were updated (e.g. hook command paths).\n"
+            "  The new paths take effect on your next Claude Code session."
+        )
     if tips:
         print("\n" + "\n\n".join(tips) + "\n")
     else:
