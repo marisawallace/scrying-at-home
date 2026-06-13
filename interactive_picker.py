@@ -304,7 +304,12 @@ def act_on_choice(result, current_host: str, demo: bool = False) -> int:
         except KeyboardInterrupt:
             return 130
 
-    # claude.ai / chatgpt / gemini — open the URL.
+    # claude.ai / chatgpt — open the URL. Any other provider (e.g. gemini, which
+    # has no resumable thread URL) has no open action: refuse rather than handing
+    # webbrowser the "Unknown provider: …" sentinel from get_provider_url().
+    if result.provider not in ("claude", "chatgpt"):
+        print(f"No open action for provider '{result.provider}'.", file=sys.stderr)
+        return 1
     url = result.get_provider_url()
     print(f"Opening {url}")
     try:

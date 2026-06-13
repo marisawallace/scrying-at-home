@@ -211,6 +211,45 @@ def test_llm_meta_project_keeps_top_level_updated_at():
 
 
 # ---------------------------------------------------------------------------
+# make_cc_item_meta — Claude Code session metadata → item row (mirror of the
+# make_llm_item_meta tests above; the cc/codex meta builders otherwise have no
+# direct unit coverage).
+# ---------------------------------------------------------------------------
+
+def test_cc_meta_from_parsed_metadata():
+    metadata = {
+        "session_id": "s1", "cwd": "/home/u/app", "git_branch": "main",
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
+        "name": "My CC Session", "model": "claude-opus-4-6",
+    }
+    meta = si.make_cc_item_meta(metadata, ["hello world"])
+    assert meta["uuid"] == "s1"
+    assert meta["item_type"] == "conversation"
+    # cc names are always non-empty, so the display name equals the raw name.
+    assert meta["name"] == "My CC Session"
+    assert meta["name_raw"] == "My CC Session"
+    assert meta["created_at"] == "2026-01-01T00:00:00Z"
+    assert meta["updated_at"] == "2026-01-02T00:00:00Z"
+    assert meta["model"] == "claude-opus-4-6"
+    assert meta["cwd"] == "/home/u/app"
+    assert meta["git_branch"] == "main"
+    assert meta["host"] == ""  # filled from FileStat by the caller
+    assert meta["preview"] == "hello world"
+    assert meta["has_preview"]
+
+
+def test_cc_meta_model_defaults_empty_and_no_preview_without_texts():
+    metadata = {
+        "session_id": "s1", "cwd": "/home/u/app", "git_branch": "",
+        "created_at": "c", "updated_at": "u", "name": "n",
+    }  # no "model" key
+    meta = si.make_cc_item_meta(metadata, [])
+    assert meta["model"] == ""  # .get("model", "") default
+    assert meta["preview"] == ""
+    assert meta["has_preview"] is False
+
+
+# ---------------------------------------------------------------------------
 # _read_complete_lines
 # ---------------------------------------------------------------------------
 
