@@ -29,7 +29,9 @@ matching is component-aware, never a raw `str.replace`.
 Moving user data is risky, so the directory-move phase has its own confirmation
 (default No), an always-written recovery manifest, an opt-in byte-for-byte
 backup, and pre-flight safety checks (mountpoint / cross-device refusal,
-destination-collision abort, dangling-reference skip, cloud-sync warnings).
+destination-collision abort — an existing file or directory at a move's
+destination is never overwritten — dangling-reference skip, cloud-sync
+warnings).
 
 Usage:
   python3 migrations/003_rename_project_and_env_paths.py
@@ -756,6 +758,12 @@ def main() -> None:
             print(f"  {RED}  Refusing to overwrite it. Resolve this by hand "
                   f"first.{RESET}")
 
+    if ok:
+        print(f"  {DIM}If a destination above already exists, that move is reported as "
+              f"a conflict{RESET}")
+        print(f"  {DIM}and the whole move phase aborts — an existing file or directory "
+              f"is never overwritten.{RESET}")
+
     sync_moves = [c for c in ok if under_sync_root(c.move.src)]
     if sync_moves:
         print(f"\n{YELLOW}{BOLD}⚠ Cloud-sync warning:{RESET}")
@@ -844,18 +852,33 @@ def main() -> None:
         sys.exit(1)
 
     # ----------------------------------------------------------------------
-    # Confirmation
+    # Confirmation. If the user opts into a backup it runs immediately — before
+    # the proceed gate — so the safety copy exists the moment they ask for it.
+    # The manifest (cheap recovery record) is written up front and folded into
+    # the backup; otherwise it's written below in the Applying step.
     # ----------------------------------------------------------------------
-    do_backup = False
+    ts = _timestamp()
+    manifest_path: Path | None = None
+    backup_dir: Path | None = None
+
     if not args.yes:
         if has_moves:
             print(f"\n{YELLOW}The directory moves below rename real directories on "
                   f"disk (every move is an{RESET}")
             print(f"{YELLOW}atomic os.rename within one filesystem, trivially "
                   f"reversible by renaming back).{RESET}")
-            do_backup = _prompt_yn(
-                "Also copy directories to a backup first?", default=False
-            )
+            print(f"{YELLOW}If any destination already exists the move aborts with "
+                  f"nothing done — an{RESET}")
+            print(f"{YELLOW}existing file or directory there is never overwritten.{RESET}")
+            if _prompt_yn("Also copy directories to a backup first?", default=False):
+                print(f"\n{BOLD}Backing up...{RESET}")
+                manifest_path = _write_manifest(classified, ts)
+                print(f"  {GREEN}✓{RESET} Wrote manifest → {_tilde(manifest_path)}")
+                backup_dir = _maybe_backup_dirs([c.move for c in ok])
+                if backup_dir is not None:
+                    (backup_dir / manifest_path.name).write_text(
+                        manifest_text(classified, ts), encoding="utf-8"
+                    )
             if not _prompt_yn(
                 "Proceed with directory moves and the edits above?", default=False
             ):
@@ -870,18 +893,10 @@ def main() -> None:
 
     print(f"\n{BOLD}Applying...{RESET}")
 
-    # --- Manifest first (the cheap recovery record), then optional backup ---
-    ts = _timestamp()
-    manifest_path = _write_manifest(classified, ts)
-    print(f"  {GREEN}✓{RESET} Wrote manifest → {_tilde(manifest_path)}")
-
-    backup_dir: Path | None = None
-    if do_backup and has_moves:
-        backup_dir = _maybe_backup_dirs([c.move for c in ok])
-        if backup_dir is not None:
-            (backup_dir / manifest_path.name).write_text(
-                manifest_text(classified, ts), encoding="utf-8"
-            )
+    # --- Manifest (always written; the backup step above may already have) ---
+    if manifest_path is None:
+        manifest_path = _write_manifest(classified, ts)
+        print(f"  {GREEN}✓{RESET} Wrote manifest → {_tilde(manifest_path)}")
 
     # --- Execute moves shallowest-first ---
     executed: list[Move] = []
