@@ -26,35 +26,13 @@ Terminal UI, hit enter to directly resume a chat. Will open your browser or `cd`
 ```
 git clone git@github.com:marisawallace/clauding-at-home.git
 cd clauding-at-home
-chmod +x sync_local_chats_archive.py
-chmod +x full_text_search_chats_archive.py
-chmod +x view_conversation.py
-
-cp .env.example .env
-# Then read and edit .env -- all options are explained!
-#
-# By default each tool reads the .env sitting next to it. Pass --config PATH to
-# point at an alternate config/profile, e.g.
-#   python3 full_text_search_chats_archive.py "query" --config ~/work/.env
-
-# Claude Code setup -- more on this below:
-python3 migrations/002_setup_claude_code_archival.py
+python3 setup.py
 ```
 
-I highly recommend adding aliases to your `.bashrc` or equivalent:
+`setup.py` is interactive, and will walk you through the options. Backups are made before all file edits.
 
-```
-alias cs="python3 $CODE_HOME/clauding-at-home/full_text_search_chats_archive.py"
-alias cs-sync-claude="python3 $CODE_HOME/clauding-at-home/sync_local_chats_archive.py --claude"
-alias cs-sync-chatgpt="python3 $CODE_HOME/clauding-at-home/sync_local_chats_archive.py --chatgpt"
-```
+See `MANUAL_SETUP.md` if you'd like to do it yourself.
 
-Make sure you have $EDITOR set. It'll be used to open chats in Markdown (hit v on a search result).
-
-```
-export VISUAL="code --wait"
-export EDITOR="$VISUAL"
-```
 
 ### Export Your Chats
 
@@ -239,11 +217,8 @@ pytest
 # Arch: sudo pacman -S python-pytest
 # macOS: brew install pytest
 
-# Run all tests
+# Run all tests, pass -v for verbose.
 pytest
-
-# Run with verbose output
-pytest -v
 
 # Run specific test file
 pytest tests/integration/test_sync_workflow.py
