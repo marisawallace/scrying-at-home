@@ -1,6 +1,7 @@
 """
-Unit tests for filter_to_here() — scoping Claude Code results to the current
-directory (and subdirs) on the current host.
+Unit tests for filter_to_here() — scoping local-CLI results to a directory (and
+subdirs) across all hosts — and float_same_host_first(), which ranks this host's
+sessions ahead of the rest.
 """
 import sys
 from pathlib import Path
@@ -28,46 +29,65 @@ def _result(provider="claude-code", host="laptop", cwd="/home/me/proj"):
 
 def test_keeps_exact_cwd_match():
     r = _result(cwd="/home/me/proj")
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == [r]
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == [r]
 
 
 def test_keeps_subdirectory():
     r = _result(cwd="/home/me/proj/src/pkg")
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == [r]
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == [r]
 
 
 def test_excludes_sibling_prefix():
     # /home/me/projector must NOT match /home/me/proj
     r = _result(cwd="/home/me/projector")
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == []
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == []
 
 
-def test_excludes_other_host():
+def test_keeps_other_host():
+    # All hosts are kept now; same-host ranking happens in float_same_host_first.
     r = _result(host="desktop", cwd="/home/me/proj")
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == []
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == [r]
 
 
 def test_excludes_non_local_cli():
-    # web providers (claude.ai/chatgpt) have no cwd/host scoping
+    # web providers (claude.ai/chatgpt) have no cwd scoping
     r = _result(provider="claude", cwd="/home/me/proj")
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == []
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == []
 
 
 def test_includes_codex():
     # codex is local-cli, so --here scopes it like claude-code
     r = _result(provider="codex", cwd="/home/me/proj")
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == [r]
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == [r]
 
 
 def test_excludes_parent_directory():
     r = _result(cwd="/home/me")
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == []
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == []
 
 
 def test_handles_missing_cwd_gracefully():
     r = _result()
     r.extra = {"host": "laptop"}
-    assert fts.filter_to_here([r], Path("/home/me/proj"), "laptop") == []
+    assert fts.filter_to_here([r], Path("/home/me/proj")) == []
+
+
+# --- float_same_host_first() --------------------------------------------------
+
+
+def test_floats_same_host_to_front_preserving_order():
+    a = _result(host="laptop", cwd="/p/a")
+    b = _result(host="desktop", cwd="/p/b")
+    c = _result(host="laptop", cwd="/p/c")
+    ordered = fts.float_same_host_first([b, a, c], "laptop")
+    assert [r.extra["cwd"] for r in ordered] == ["/p/a", "/p/c", "/p/b"]
+
+
+def test_float_is_stable_when_all_same_host():
+    a = _result(host="laptop", cwd="/p/a")
+    b = _result(host="laptop", cwd="/p/b")
+    ordered = fts.float_same_host_first([a, b], "laptop")
+    assert [r.extra["cwd"] for r in ordered] == ["/p/a", "/p/b"]
 
 
 # --- here_miss_hint() ---------------------------------------------------------
@@ -78,29 +98,36 @@ def _strip_ansi(s: str) -> str:
     return re.sub(r"\033\[[0-9;]*m", "", s)
 
 
-def test_hint_flags_host_mismatch():
-    # Results exist on 'desktop', but we're on 'laptop' → host is the culprit.
-    results = [_result(host="desktop", cwd="/home/me/proj")]
-    hint = _strip_ansi(fts.here_miss_hint(results, Path("/home/me/proj"), "laptop", False))
-    assert "'laptop'" in hint
-    assert "'desktop'" in hint
-    assert "not among the result hosts" in hint
-    assert "system hostname" in hint  # host_is_explicit=False
-    # The directory line should not claim a directory miss when the host is wrong.
-    assert "no session was recorded here" not in hint
+def test_hint_shows_dir_host_and_source():
+    hint = _strip_ansi(fts.here_miss_hint(Path("/home/me/proj"), "laptop", False, "claude-code"))
+    assert "dir:    /home/me/proj" in hint
+    assert "host:   laptop (system hostname)" in hint  # host_is_explicit=False
+    assert "source: claude-code" in hint
 
 
-def test_hint_flags_directory_miss_when_host_matches():
-    # Host matches; the cwd just isn't among recorded sessions.
-    results = [_result(host="laptop", cwd="/home/me/other")]
-    hint = _strip_ansi(fts.here_miss_hint(results, Path("/home/me/proj"), "laptop", True))
-    assert "no session was recorded here" in hint
-    assert "not among the result hosts" not in hint
-    assert "MACHINE_NAME" in hint  # host_is_explicit=True
-    assert "/home/me/proj" in hint
+def test_hint_labels_machine_name_when_explicit():
+    hint = _strip_ansi(fts.here_miss_hint(Path("/srv/explicit"), "laptop", True, "codex"))
+    assert "dir:    /srv/explicit" in hint
+    assert "host:   laptop (MACHINE_NAME)" in hint  # host_is_explicit=True
+    assert "source: codex" in hint
 
 
-def test_hint_reports_count():
-    results = [_result(host="desktop"), _result(host="desktop")]
-    hint = _strip_ansi(fts.here_miss_hint(results, Path("/home/me/proj"), "laptop", False))
-    assert "none of the 2 local-CLI result(s)" in hint
+# --- --here argument parsing --------------------------------------------------
+
+
+def _here_value(argv):
+    """Parse argv with build_parser() and return the raw args.here sentinel."""
+    return fts.build_parser().parse_args(argv).here
+
+
+def test_here_absent_is_none():
+    assert _here_value(["query"]) is None
+
+
+def test_here_bare_is_true():
+    # A bare --here means "current directory" — represented by the True sentinel.
+    assert _here_value(["query", "--here"]) is True
+
+
+def test_here_with_path_is_the_path():
+    assert _here_value(["query", "--here", "/home/me/proj"]) == "/home/me/proj"

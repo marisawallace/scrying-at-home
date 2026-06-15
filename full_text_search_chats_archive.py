@@ -903,57 +903,60 @@ def gather_codex_tool_counts(sources: List[Tuple[str, Path]]):
     return counts
 
 
-def filter_to_here(results: List[SearchResult], cwd: Path, host: str) -> List[SearchResult]:
-    """Keep only local-CLI results (claude-code, codex) on `host` whose session
-    cwd is `cwd` or a subdir of it.
+def filter_to_here(results: List[SearchResult], here_dir: Path) -> List[SearchResult]:
+    """Keep only local-CLI results (claude-code, codex) whose session cwd is
+    `here_dir` or a subdir of it.
+
+    All hosts are kept: the same project directory synced to another machine is
+    still "here". Same-host results are floated to the top of the final ordering
+    by float_same_host_first() rather than filtered out here.
 
     Filtering on the recorded session cwd (rather than reconstructing a project
     slug from a directory name) is robust to slug-encoding details. Note:
     extract_session_metadata() records a single cwd per session, so a session
-    that cd's into `cwd` mid-run will not match.
+    that cd's into `here_dir` mid-run will not match.
     """
-    cwd = Path(cwd).resolve()
+    here_dir = Path(here_dir).resolve()
 
     def under(p: str) -> bool:
         try:
-            return Path(p).resolve().is_relative_to(cwd)
+            return Path(p).resolve().is_relative_to(here_dir)
         except (ValueError, OSError):
             return False
 
     return [
         r for r in results
         if providers.is_local_cli(r.provider)
-        and (r.extra or {}).get("host") == host
         and under((r.extra or {}).get("cwd", ""))
     ]
 
 
-def here_miss_hint(
-    pre_filter: List[SearchResult], cwd: Path, host: str, host_is_explicit: bool
-) -> str:
-    """Build a dim, multi-line diagnostic explaining why --here matched nothing.
+def float_same_host_first(results: List[SearchResult], host: str) -> List[SearchResult]:
+    """Stable-partition `results` so sessions recorded on `host` come first,
+    preserving the existing order within each group.
 
-    Prints both sides of the host equality test plus the current directory so the
-    user can eyeball a mismatch. `pre_filter` is the local-CLI result set before
-    --here was applied (non-empty); call only when the post-filter set is empty.
-
-    Two failure modes are distinguished:
-      - host mismatch: this machine's host name isn't among the result hosts at all
-        (common when MACHINE_NAME is unset and the hostname doesn't match the
-        label in CLAUDE_CODE_SOURCES).
-      - directory miss: the host matches but no session was recorded under `cwd`.
+    Used by --here to rank sessions from this machine above same-directory
+    sessions synced from other hosts, regardless of recency or relevance score.
     """
-    hosts_present = sorted({(r.extra or {}).get("host", "") for r in pre_filter})
-    host_source = MACHINE_NAME_ENV_KEY if host_is_explicit else "system hostname"
-    host_match = host in hosts_present
+    return sorted(results, key=lambda r: (r.extra or {}).get("host") != host)
 
+
+def here_miss_hint(here_dir: Path, host: str, host_is_explicit: bool, source: str) -> str:
+    """Build a dim, three-line diagnostic shown when --here matched nothing.
+
+    Names the directory --here scoped to, the host whose sessions would have
+    ranked first, and the source block that came up empty, so the user can
+    eyeball a wrong path or host. `here_dir` is the resolved filter directory
+    (the cwd for a bare --here, or the explicit PATH); `source` is the local-CLI
+    source that missed ("claude-code" or "codex"), since each block emits its
+    own hint. Call only when local-CLI results existed before --here was applied
+    but none fell under `here_dir`.
+    """
+    host_source = MACHINE_NAME_ENV_KEY if host_is_explicit else "system hostname"
     lines = [
-        f"--here matched none of the {len(pre_filter)} local-CLI result(s) for this query.",
-        f"  this host ({host_source}): {host!r}"
-        + ("" if host_match else "   ← not among the result hosts below"),
-        f"  hosts in results:  {', '.join(repr(h) for h in hosts_present)}",
-        f"  current directory: {str(cwd)!r}"
-        + ("   ← no session was recorded here" if host_match else ""),
+        f"dir:    {here_dir}",
+        f"host:   {host} ({host_source})",
+        f"source: {source}",
     ]
     return "\n".join(f"{Colors.DIM}{line}{Colors.RESET}" for line in lines)
 
@@ -1212,8 +1215,8 @@ def open_results_in_editor(results: List[SearchResult], count: int, config: dict
     open_in_editor(*(Path(f) for f in markdown_files))
 
 
-def main():
-    """Main entry point."""
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the CLI argument parser (pure; no parsing or side effects)."""
     parser = argparse.ArgumentParser(
         description="Full-text search for chat archives (Claude, ChatGPT, Claude Code).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1228,8 +1231,9 @@ Examples:
   %(prog)s "deployment" -R
   %(prog)s "archive" -s claude-code        # search only Claude Code sessions
   %(prog)s "archive" -s codex              # search only OpenAI Codex sessions
-  %(prog)s "bugfix" --here                  # local-CLI sessions from this dir on this host
+  %(prog)s "bugfix" --here                  # local-CLI sessions from this dir, any host (this host first)
   %(prog)s --here                           # this dir's local-CLI sessions, newest first
+  %(prog)s "bugfix" --here ~/code/proj      # local-CLI sessions from another dir, any host
         """
     )
 
@@ -1287,8 +1291,11 @@ Examples:
 
     parser.add_argument(
         "--here",
-        action="store_true",
-        help="Only local-CLI sessions (Claude Code, Codex) run from the current directory (and subdirs) on this host"
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PATH",
+        help="Only local-CLI sessions (Claude Code, Codex) run from PATH (and subdirs) on any host, with this host's sessions ranked first; PATH defaults to the current directory"
     )
 
     parser.add_argument(
@@ -1320,7 +1327,12 @@ Examples:
         help="Path to the .env config file (default: alongside this script)",
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    """Main entry point."""
+    args = build_parser().parse_args()
 
     # --stats reports over the whole archive, so it ignores any query and
     # browses every item across the selected source(s).
@@ -1332,12 +1344,27 @@ Examples:
     query = (args.query or "").strip()
     no_query = not query
 
-    # --here scopes to local-CLI sessions (claude-code + codex) run from the
-    # current directory on this host. It is incompatible with the web-only llm
-    # source; otherwise it leaves args.source intact ("all" runs both local-CLI
-    # blocks, an explicit -s claude-code/codex narrows to one) and the per-block
-    # filter_to_here below does the directory/host scoping.
-    if args.here and args.source == "llm":
+    # --here scopes to local-CLI sessions (claude-code + codex) run from a
+    # directory, on any host (sessions from this host rank first; see
+    # float_same_host_first below). A bare --here uses the current directory;
+    # --here PATH overrides it. here_dir is the resolved target (None when --here
+    # was not given) and is the single truthiness signal downstream. It is
+    # incompatible with the web-only llm source; otherwise it leaves args.source
+    # intact ("all" runs both local-CLI blocks, an explicit -s claude-code/codex
+    # narrows to one) and the per-block filter_to_here below does the directory
+    # scoping.
+    here_dir = None
+    if args.here is not None:
+        if args.here is True:
+            here_dir = Path.cwd().resolve()
+        else:
+            # No existence check: --here filters on each session's recorded cwd,
+            # so a path that has since been moved, renamed, or deleted is still a
+            # valid filter. A path that matches nothing falls through to
+            # here_miss_hint rather than erroring.
+            here_dir = Path(args.here).expanduser().resolve()
+
+    if here_dir is not None and args.source == "llm":
         print("Error: --here cannot be combined with -s llm", file=sys.stderr)
         sys.exit(1)
 
@@ -1399,6 +1426,11 @@ Examples:
 
     # Perform search across requested sources
     results: List[SearchResult] = []
+    # local-CLI sources (claude-code, codex) that had matches before --here but
+    # none under here_dir. Reported only if the whole --here search ends empty:
+    # a source coming up empty is not a miss worth flagging when a sibling source
+    # did match here.
+    here_misses: List[str] = []
     recency = not args.no_recency
 
     current_host = resolve_host_name(config)
@@ -1409,7 +1441,7 @@ Examples:
     snapshot = search_index.read_snapshot(index_conn) if index_conn is not None else nullcontext()
     with snapshot:
         # --here is web-incompatible, so skip the llm block when it is set.
-        if args.source in ("all", "llm") and not args.here:
+        if args.source in ("all", "llm") and here_dir is None:
             if index_browse:
                 rows = search_index.browse_items(index_conn, search_index.SOURCE_LLM)
                 if rows is not None:
@@ -1433,12 +1465,11 @@ Examples:
                     cc_results = search_cc_with_index(index_conn, cc_sources, query, args.exact, recency)
                 else:
                     cc_results = search_claude_code_archive(cc_sources, query, apply_recency_boost=recency, exact=args.exact)
-                if args.here:
+                if here_dir is not None:
                     pre_filter = cc_results
-                    cc_results = filter_to_here(pre_filter, Path.cwd(), current_host)
+                    cc_results = filter_to_here(pre_filter, here_dir)
                     if pre_filter and not cc_results:
-                        host_is_explicit = bool(explicit_host_name(config))
-                        print(here_miss_hint(pre_filter, Path.cwd(), current_host, host_is_explicit), file=sys.stderr)
+                        here_misses.append("claude-code")
                 results.extend(cc_results)
             elif args.source == "claude-code":
                 print(f"Error: {CLAUDE_CODE_SOURCES_ENV_KEY} not configured in .env", file=sys.stderr)
@@ -1456,16 +1487,23 @@ Examples:
                     codex_results = search_codex_with_index(index_conn, codex_sources, query, args.exact, recency)
                 else:
                     codex_results = search_codex_archive(codex_sources, query, apply_recency_boost=recency, exact=args.exact)
-                if args.here:
+                if here_dir is not None:
                     pre_filter = codex_results
-                    codex_results = filter_to_here(pre_filter, Path.cwd(), current_host)
+                    codex_results = filter_to_here(pre_filter, here_dir)
                     if pre_filter and not codex_results:
-                        host_is_explicit = bool(explicit_host_name(config))
-                        print(here_miss_hint(pre_filter, Path.cwd(), current_host, host_is_explicit), file=sys.stderr)
+                        here_misses.append("codex")
                 results.extend(codex_results)
             elif args.source == "codex":
                 print(f"Error: {CODEX_SOURCES_ENV_KEY} not configured in .env", file=sys.stderr)
                 sys.exit(1)
+
+    # --here diagnostics: only when nothing matched here across every local-CLI
+    # source (results holds only here-filtered local-CLI items, since --here skips
+    # the llm block). One hint per missed source, mirroring the per-source blocks.
+    if here_dir is not None and here_misses and not results:
+        host_is_explicit = bool(explicit_host_name(config))
+        for source in here_misses:
+            print(here_miss_hint(here_dir, current_host, host_is_explicit, source), file=sys.stderr)
 
     # Re-sort combined results by score
     results.sort(key=lambda r: -r.total_score)
@@ -1476,6 +1514,15 @@ Examples:
         results.sort(key=lambda r: r.updated_at, reverse=True)
     elif args.time_sort:
         results.sort(key=lambda r: (r.updated_at, r.total_score), reverse=True)
+
+    # --here keeps every host's sessions for this dir, but floats the ones from
+    # this machine to the top. Done as a stable partition after the score/recency
+    # sort above (rather than a score bonus) so it also takes effect in browse and
+    # --time-sort modes, which order by date and would ignore any score nudge. This
+    # covers the json/static/-o paths; the interactive picker re-sorts from scratch
+    # and re-applies the float itself.
+    if here_dir is not None:
+        results = float_same_host_first(results, current_host)
 
     import demo_mode
     results = demo_mode.maybe_apply(results, config) # No-op unless DEMO_* env vars are set.
@@ -1533,6 +1580,11 @@ Examples:
                 picker_results = sorted(results, key=lambda r: r.updated_at, reverse=True)
             else:
                 picker_results = sorted(results, key=lambda r: -r.total_score)
+            # The picker re-sorts from scratch (by recency or score), so re-apply
+            # the --here host float here too — otherwise this-host-first ranking
+            # would only survive in the json/static/-o paths, not the picker.
+            if here_dir is not None:
+                picker_results = float_same_host_first(picker_results, current_host)
             demo = bool(config.get("DEMO_HOSTNAMES", "").strip())
             sys.exit(interactive_picker.pick_and_act(picker_results, query, args.exact, current_host, demo))
     else:

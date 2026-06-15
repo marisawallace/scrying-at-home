@@ -35,6 +35,34 @@ python3 setup.py
 
 See `MANUAL_SETUP.md` if you'd like to do it yourself.
 
+## Usage (if you set up based aliases)
+
+```
+# Enter to resume
+# v to open markdown in `$EDITOR`
+# h to open HTML in browser.
+# q, Esc, or Ctrl-C to exit
+
+sy "hi claude"
+
+# Filter to Claude Code / Codex results in the tree:
+sy "foo" --here [path/to/folder]
+
+# Open the top 3 results for "books" in `$EDITOR`
+sy books -o 3
+
+# JSON output
+sy books -j > results.json
+
+# Browse everything, newest first (no query)
+sy
+
+# Analytics over your archive!
+sy --stats [-s claude-code]
+
+# Bulk-export the whole archive
+python3 export_archive.py ~/Obsidian/llm-archive [--dry-run]
+```
 
 ### Export Your Chats
 
@@ -103,37 +131,7 @@ Which adds a `Stop` hook in `~/.codex/hooks.json` to call `codex_sync.py`, sets 
 
 Unlike Claude Code, the Codex `Stop` payload carries no transcript path, so the hook sweeps the whole `sessions/` tree each turn — idempotent and cheap (it line-count compares the archive and writes only the new tail). Same append-only assumption; truncation is reported to `codex_anomalies.log`.
 
-Search/view just like any other provider: `cs -s codex "query"`, `cs --here` (now spans Claude Code *and* Codex sessions from the current directory).
-
-## Usage (if you set up based aliases)
-
-```
-# Enter to resume, v to open markdown in `$EDITOR`, h to open HTML in browser.
-# q, Esc, or Ctrl-C to exit
-cs "hi claude"
-
-# Open the top 3 results for "books" in `$EDITOR`
-cs books -o 3
-
-# JSON output
-cs books -j > results.json
-
-# Browse everything, newest first (no query)
-cs
-
-# For fun, analytics over your archive!
-cs --stats
-cs --stats -s claude-code
-
-# Bulk-export the whole archive
-python3 export_archive.py ~/Obsidian/llm-archive
-
-# Preview what would be exported, writing nothing
-python3 export_archive.py -s claude-code --dry-run
-```
-
 ---
-
 
 ## Example Directory Structure
 
