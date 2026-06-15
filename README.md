@@ -70,13 +70,13 @@ python3 export_archive.py ~/Obsidian/llm-archive [--dry-run]
 1. [https://claude.ai/settings/data-privacy-controls](https://claude.ai/settings/data-privacy-controls)
 2. Click "Export data"
 3. Download the .zip file
-4. Run `your-alias`, `csscl`, or `python3 sync_local_chats_archive.py --claude`
+4. Run `your-alias` or `python3 sync_local_chats_archive.py --claude`
 
 #### ChatGPT
 1. [https://chatgpt.com/#settings/DataControls](https://chatgpt.com/#settings/DataControls)
 2. Click "Export data"
 3. Download the .zip file
-4. Run `your-alias`, `cssch`, or `python3 sync_local_chats_archive.py --chatgpt`
+4. Run `your-alias` or `python3 sync_local_chats_archive.py --chatgpt`
 
 The sync script will:
 - Find all export zip files matching the provider's pattern
@@ -225,7 +225,7 @@ Interactive search accepts Home/End to jump to the first/last result, but the st
 
 ## Requirements
 
-- **Python**: 3.8+
+- **Python**: 3.10+
 - **Dependencies**: vendored (prompt_toolkit, mistune, pygments, and wcwidth). No install step. Just run the scripts with system python!
 
 ## Testing
