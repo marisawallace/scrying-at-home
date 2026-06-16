@@ -38,8 +38,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
-import claude_code_parser as ccp
-import codex_parser as cxp
+from scrying_at_home.parsers import claude_code as ccp
+from scrying_at_home.parsers import codex as cxp
+from scrying_at_home.parsers.transcript_jsonl import parse_jsonl_lines
+
+from scrying_at_home.common.timestamps import derive_updated_at
+from scrying_at_home.common.constants import UNTITLED
+from scrying_at_home.config.paths import WEB_EXPORT_SUBDIRS
+from scrying_at_home import providers
 
 SCHEMA_VERSION = 6
 RECONCILE_BATCH = 200
@@ -55,10 +61,20 @@ PROGRESS_BAR_WIDTH = 30
 # extraction logic automatically invalidates the index — without this, an
 # extractor edit would leave stale FTS bodies that silently drop matches.
 SCHEMA_SOURCE_FILES = (
-    "search_index.py",
-    "claude_code_parser.py",
-    "codex_parser.py",
-    "full_text_search_chats_archive.py",
+    # Repo-root-relative paths; schema_identity resolves them from the repo root.
+    "scrying_at_home/index/search_index.py",
+    "scrying_at_home/parsers/claude_code.py",
+    "scrying_at_home/parsers/codex.py",
+    "scrying_at_home/parsers/transcript_jsonl.py",  # shared tokenizer / model tie-break
+    "scrying_at_home/search/engine.py",  # scan-path extractors / scoring
+    "scrying_at_home/search/result.py",  # SearchResult assembly + name-bonus/recency scoring
+    # scrying_at_home.common leaves whose output is STORED in the index, so an edit must
+    # invalidate it too: timestamps.derive_updated_at -> items.updated_at,
+    # text.truncate_name -> items.name. (Over-invalidates on sibling edits like
+    # parse_iso/normalize_uuid — the safe direction.)
+    "scrying_at_home/common/timestamps.py",
+    "scrying_at_home/common/text.py",
+    "scrying_at_home/common/constants.py",  # UNTITLED -> items.name substitution
 )
 
 
@@ -72,7 +88,9 @@ def schema_identity(src_dir: Optional[Path] = None) -> int:
     missed extractor change silently breaks the FTS-superset invariant.
     """
     h = hashlib.sha1(str(SCHEMA_VERSION).encode())
-    base = Path(__file__).resolve().parent if src_dir is None else src_dir
+    # Resolve repo-root-relative SCHEMA_SOURCE_FILES from the repo root
+    # (search_index.py now lives at scrying_at_home/index/, two levels down).
+    base = Path(__file__).resolve().parents[2] if src_dir is None else src_dir
     for name in SCHEMA_SOURCE_FILES:
         h.update(name.encode())
         try:
@@ -171,6 +189,30 @@ CREATE TABLE file_texts (
 """
 
 
+# One definition of the files / items column sets, so the DDL above, the INSERTs,
+# and the SELECT projections below cannot drift in name, order, or count. The DDL
+# stays the canonical human-readable declaration (it carries the per-column
+# types/constraints); the INSERT/SELECT strings derive from these tuples.
+FILES_COLUMNS = ("id", "path", "source", "mtime_ns", "ctime_ns", "size", "indexed_bytes")
+ITEMS_COLUMNS = (
+    "file_id", "uuid", "item_type", "provider", "name", "name_raw",
+    "created_at", "updated_at", "email", "model", "host", "cwd", "git_branch",
+    "preview", "has_preview",
+)
+# files.id is INTEGER PRIMARY KEY (autoincrement): selected, never inserted.
+# Placeholder counts are len-derived, so they can't fall out of sync with columns.
+_FILES_INSERT_COLS = FILES_COLUMNS[1:]
+_FILES_INSERT_SQL = (
+    f"INSERT INTO files({', '.join(_FILES_INSERT_COLS)}) "
+    f"VALUES ({', '.join(['?'] * len(_FILES_INSERT_COLS))})"
+)
+_FILES_SELECT_SQL = ", ".join(FILES_COLUMNS)
+_ITEMS_INSERT_SQL = (
+    f"INSERT INTO items({', '.join(ITEMS_COLUMNS)}) "
+    f"VALUES ({', '.join(['?'] * len(ITEMS_COLUMNS))})"
+)
+
+
 @dataclass(frozen=True)
 class FileStat:
     """One archive file as seen on disk, with the walk-derived context
@@ -267,18 +309,12 @@ def make_llm_item_meta(data: dict, item_type: str, texts: list[str]) -> dict:
     # — misread by refresh() as write contention, silently disabling the index
     # every run. The scan path coerces the same null via `name.lower() if name`.
     name = data.get("name") or ""
-    updated_at = data.get("updated_at", data["created_at"])
-    if item_type == "conversation":
-        messages = data.get("chat_messages", [])
-        if messages:
-            last_msg_date = messages[-1].get("created_at", "")
-            if last_msg_date:
-                updated_at = last_msg_date
+    updated_at = derive_updated_at(data, item_type)
     preview, has_preview = preview_from_texts(texts)
     return {
         "uuid": data["uuid"],
         "item_type": item_type,
-        "name": name if name else "(untitled)",
+        "name": name if name else UNTITLED,
         "name_raw": name,  # raw, possibly empty: drives the name bonus
         "created_at": data["created_at"],
         "updated_at": updated_at,
@@ -291,43 +327,26 @@ def make_llm_item_meta(data: dict, item_type: str, texts: list[str]) -> dict:
     }
 
 
-def make_cc_item_meta(metadata: dict, texts: list[str]) -> dict:
-    """Item metadata for a Claude Code JSONL session from its parsed
-    extract_session_metadata() dict."""
+def make_local_cli_item_meta(metadata: dict, texts: list[str]) -> dict:
+    """Item metadata for a local-CLI transcript (Claude Code or Codex) from its
+    parsed extract_session_metadata() dict.
+
+    Both providers share one row shape: uuid is the session_id, name == name_raw
+    (local-CLI names are always non-empty, derived from the first prompt), host
+    is filled from the FileStat by the caller, and git_branch comes straight from
+    the parser (always "" for Codex, which records no git info)."""
     preview, has_preview = preview_from_texts(texts)
     return {
         "uuid": metadata["session_id"],
         "item_type": "conversation",
         "name": metadata["name"],
-        "name_raw": metadata["name"],  # cc names are always non-empty: name == raw
+        "name_raw": metadata["name"],  # local-CLI names are always non-empty: name == raw
         "created_at": metadata["created_at"],
         "updated_at": metadata["updated_at"],
         "model": metadata.get("model", ""),
         "host": "",  # filled from FileStat by the caller
         "cwd": metadata["cwd"],
         "git_branch": metadata["git_branch"],
-        "preview": preview,
-        "has_preview": has_preview,
-    }
-
-
-def make_codex_item_meta(metadata: dict, texts: list[str]) -> dict:
-    """Item metadata for an OpenAI Codex rollout from its parsed
-    extract_session_metadata() dict. Mirrors make_cc_item_meta: uuid is the
-    session_id, host is filled from FileStat by the caller, and git_branch is
-    always '' (Codex records no git info)."""
-    preview, has_preview = preview_from_texts(texts)
-    return {
-        "uuid": metadata["session_id"],
-        "item_type": "conversation",
-        "name": metadata["name"],
-        "name_raw": metadata["name"],  # codex names are always non-empty: name == raw
-        "created_at": metadata["created_at"],
-        "updated_at": metadata["updated_at"],
-        "model": metadata.get("model", ""),
-        "host": "",  # filled from FileStat by the caller
-        "cwd": metadata["cwd"],
-        "git_branch": metadata["git_branch"],  # always "" for codex
         "preview": preview,
         "has_preview": has_preview,
     }
@@ -362,8 +381,8 @@ class _TranscriptIndexer:
 # file just skips the fts/items rows (its fs.source != indexer.searchable).
 # Codex has no tools-only variant — its single rollout per session is always
 # searchable, so SOURCE_CODEX maps straight to its own indexer.
-_CC_INDEXER = _TranscriptIndexer("claude-code", ccp, make_cc_item_meta, SOURCE_CC)
-_CODEX_INDEXER = _TranscriptIndexer("codex", cxp, make_codex_item_meta, SOURCE_CODEX)
+_CC_INDEXER = _TranscriptIndexer("claude-code", ccp, make_local_cli_item_meta, SOURCE_CC)
+_CODEX_INDEXER = _TranscriptIndexer("codex", cxp, make_local_cli_item_meta, SOURCE_CODEX)
 _TRANSCRIPT_INDEXERS: dict = {
     SOURCE_CC: _CC_INDEXER,
     SOURCE_CC_TOOLS: _CC_INDEXER,
@@ -416,18 +435,9 @@ def diff_index(disk: list[FileStat], indexed: list[IndexedFile]) -> ReconcilePla
 
 
 def parse_jsonl_texts(raw_lines: list[str], filepath: str) -> list[dict]:
-    """json.loads each raw JSONL line, skipping blanks and warning on
-    malformed lines — same behavior as claude_code_parser.parse_jsonl()."""
-    lines = []
-    for i, raw in enumerate(raw_lines, 1):
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            lines.append(json.loads(raw))
-        except json.JSONDecodeError as e:
-            print(f"Warning: {filepath}:{i}: malformed JSON: {e}", file=sys.stderr)
-    return lines
+    """json.loads each raw JSONL line (blanks skipped, malformed warned).
+    Delegates to the shared transcript_jsonl tokenizer."""
+    return parse_jsonl_lines(raw_lines, filepath)
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +618,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]],
     given, each (host, root) is walked for rollout-*.jsonl transcripts."""
     stats: list[FileStat] = []
 
-    for provider in ["claude", "chatgpt"]:
+    for provider in providers.ingest_dir_providers():
         provider_dir = data_dir / provider
         try:
             user_entries = os.scandir(provider_dir)
@@ -619,7 +629,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]],
                 if not user_entry.is_dir():  # follows symlinks, like Path.is_dir()
                     continue
                 email = user_entry.name
-                for subdir, item_type in (("conversations", "conversation"), ("projects", "project")):
+                for subdir, item_type in WEB_EXPORT_SUBDIRS:
                     item_dir = os.path.join(user_entry.path, subdir)
                     for path, st in _scan_suffix(item_dir, ".json"):
                         stats.append(FileStat(
@@ -664,7 +674,7 @@ def scan_disk(data_dir: Path, cc_sources: list[tuple[str, Path]],
 
 def load_indexed_files(conn: sqlite3.Connection) -> list[IndexedFile]:
     rows = conn.execute(
-        "SELECT id, path, source, mtime_ns, ctime_ns, size, indexed_bytes FROM files"
+        f"SELECT {_FILES_SELECT_SQL} FROM files"
     ).fetchall()
     return [IndexedFile(*row) for row in rows]
 
@@ -725,8 +735,7 @@ def _insert_fts_segment(conn: sqlite3.Connection, file_id: int, body: str) -> No
 def _insert_file_row(conn: sqlite3.Connection, fs: FileStat,
                      indexed_bytes: int) -> int:
     cur = conn.execute(
-        "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        _FILES_INSERT_SQL,
         (fs.path, fs.source, fs.mtime_ns, fs.ctime_ns, fs.size, indexed_bytes),
     )
     return cur.lastrowid
@@ -746,10 +755,7 @@ def _insert_file_texts(conn: sqlite3.Connection, file_id: int, texts: list) -> N
 def _insert_item_row(conn: sqlite3.Connection, file_id: int, provider: str,
                      email: str, meta: dict) -> None:
     conn.execute(
-        "INSERT INTO items(file_id, uuid, item_type, provider, name, name_raw, "
-        "created_at, updated_at, email, model, host, cwd, git_branch, preview, "
-        "has_preview) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        _ITEMS_INSERT_SQL,
         (file_id, meta["uuid"], meta["item_type"], provider, meta["name"],
          meta.get("name_raw", meta["name"]), meta["created_at"], meta["updated_at"],
          email, meta.get("model", ""), meta["host"], meta["cwd"], meta["git_branch"],
@@ -970,17 +976,49 @@ def candidate_paths(conn: sqlite3.Connection, fts_query: str,
 
 
 # Columns every rescore row carries, in SELECT order. Mirrors what the scan
-# path reconstructs per file (make_llm_item_meta / make_cc_item_meta + the
+# path reconstructs per file (make_llm_item_meta / make_local_cli_item_meta + the
 # raw name and stored texts) so results_from_index_rows can rebuild a
 # SearchResult without touching the file.
-_ROW_KEYS = (
-    "path", "texts", "uuid", "item_type", "provider", "name", "name_raw",
-    "created_at", "updated_at", "email", "model", "host", "cwd", "git_branch",
+# One ordered (key, sql_expr) projection: _ROW_KEYS and _ROW_SELECT derive from
+# it, so they can't drift out of alignment (reordering one alone would silently
+# mislabel every rescore row — e.g. created_at values landing under updated_at).
+_ROW_COLUMNS = (
+    ("path", "f.path"),
+    ("texts", "t.texts"),
+    ("uuid", "i.uuid"),
+    ("item_type", "i.item_type"),
+    ("provider", "i.provider"),
+    ("name", "i.name"),
+    ("name_raw", "i.name_raw"),
+    ("created_at", "i.created_at"),
+    ("updated_at", "i.updated_at"),
+    ("email", "i.email"),
+    ("model", "i.model"),
+    ("host", "i.host"),
+    ("cwd", "i.cwd"),
+    ("git_branch", "i.git_branch"),
 )
-_ROW_SELECT = (
-    "f.path, t.texts, i.uuid, i.item_type, i.provider, i.name, i.name_raw, "
-    "i.created_at, i.updated_at, i.email, i.model, i.host, i.cwd, i.git_branch"
+_ROW_KEYS = tuple(k for k, _ in _ROW_COLUMNS)
+_ROW_SELECT = ", ".join(expr for _, expr in _ROW_COLUMNS)
+
+# Browse-mode projection (no texts/name_raw; adds preview), same derive pattern.
+_BROWSE_COLUMNS = (
+    ("uuid", "i.uuid"),
+    ("item_type", "i.item_type"),
+    ("provider", "i.provider"),
+    ("name", "i.name"),
+    ("created_at", "i.created_at"),
+    ("updated_at", "i.updated_at"),
+    ("email", "i.email"),
+    ("model", "i.model"),
+    ("host", "i.host"),
+    ("cwd", "i.cwd"),
+    ("git_branch", "i.git_branch"),
+    ("preview", "i.preview"),
+    ("path", "f.path"),
 )
+_BROWSE_KEYS = tuple(k for k, _ in _BROWSE_COLUMNS)
+_BROWSE_SELECT = ", ".join(expr for _, expr in _BROWSE_COLUMNS)
 
 
 @contextmanager
@@ -1052,8 +1090,7 @@ def browse_items(conn: sqlite3.Connection, source: str) -> Optional[list]:
     callers fall back to the scan path."""
     try:
         rows = conn.execute(
-            "SELECT i.uuid, i.item_type, i.provider, i.name, i.created_at, i.updated_at, "
-            "i.email, i.model, i.host, i.cwd, i.git_branch, i.preview, f.path "
+            f"SELECT {_BROWSE_SELECT} "
             "FROM items i JOIN files f ON f.id = i.file_id "
             "WHERE i.has_preview = 1 AND f.source = ? ORDER BY f.path",
             (source,),
@@ -1061,9 +1098,7 @@ def browse_items(conn: sqlite3.Connection, source: str) -> Optional[list]:
     except sqlite3.Error as e:
         print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
         return None
-    keys = ("uuid", "item_type", "provider", "name", "created_at", "updated_at",
-            "email", "model", "host", "cwd", "git_branch", "preview", "path")
-    return [dict(zip(keys, row)) for row in rows]
+    return [dict(zip(_BROWSE_KEYS, row)) for row in rows]
 
 
 def tool_counts(conn: sqlite3.Connection,

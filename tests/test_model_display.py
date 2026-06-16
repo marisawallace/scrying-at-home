@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import full_text_search_chats_archive as fts
+from scrying_at_home.search import engine as fts
 
 
 class TestPrettifyModel:

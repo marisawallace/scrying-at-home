@@ -15,13 +15,10 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-from paths import load_env_file, resolve_data_dir
+from scrying_at_home.config.paths import REPO_ROOT, load_env_file, resolve_data_dir
 
-# Color codes for output
-GREEN = "\033[92m"
-RED = "\033[91m"
-YELLOW = "\033[93m"
-RESET = "\033[0m"
+# Color codes for output (bright variants from the shared vocabulary).
+from scrying_at_home.common.ansi import BRIGHT_GREEN as GREEN, BRIGHT_RED as RED, BRIGHT_YELLOW as YELLOW, RESET
 
 
 def print_success(msg: str) -> None:
@@ -191,7 +188,7 @@ def test_format_validators() -> Tuple[bool, List[str]]:
     Returns (success, error_messages).
     """
     errors = []
-    script_dir = Path(__file__).parent
+    script_dir = REPO_ROOT
     test_data_dir = script_dir / "tests/test-data"
 
     if not test_data_dir.exists():
@@ -199,7 +196,7 @@ def test_format_validators() -> Tuple[bool, List[str]]:
 
     # Test Claude validator
     try:
-        from sync_local_chats_archive import validate_claude_export_format
+        from scrying_at_home.sync.local_chats import validate_claude_export_format
 
         with open(test_data_dir / "users.json") as f:
             users = json.load(f)
@@ -221,7 +218,7 @@ def test_format_validators() -> Tuple[bool, List[str]]:
 
 def main():
     """Main entry point."""
-    script_dir = Path(__file__).parent
+    script_dir = REPO_ROOT
     config = load_env_file(script_dir / ".env")
     data_dir = resolve_data_dir(script_dir, config)
 

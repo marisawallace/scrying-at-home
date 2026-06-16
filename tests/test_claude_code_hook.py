@@ -21,7 +21,7 @@ import pytest
 
 # Add project root to path (matches the other unit tests)
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import claude_code_hook as hook
+from scrying_at_home.sync import claude_code_hook as hook
 
 
 def _write_lines(path: Path, dicts: list[dict]) -> None:

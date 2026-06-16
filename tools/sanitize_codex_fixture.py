@@ -43,7 +43,7 @@ import string
 import sys
 from pathlib import Path
 
-from fixture_pii_audit import DEFAULT_FIXTURE, PLACEHOLDER_TIMEZONE, read_records
+from tools.fixture_pii_audit import DEFAULT_FIXTURE, PLACEHOLDER_TIMEZONE, read_records
 
 ORIGINAL_TIMEZONE = "America/Denver"
 PLACEHOLDER_HOME = "/home/user"

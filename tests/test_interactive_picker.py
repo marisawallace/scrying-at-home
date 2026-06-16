@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import interactive_picker as ip
-from full_text_search_chats_archive import SearchResult
+from scrying_at_home.view import picker as ip
+from scrying_at_home.search.engine import SearchResult
 
 
 def make_result(provider="claude-code", uuid="cc-test-session-001",

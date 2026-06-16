@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import codex_sync
+from scrying_at_home.sync import codex_sync
 
 
 def _write_lines(path: Path, dicts: list[dict]) -> None:

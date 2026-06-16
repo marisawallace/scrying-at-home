@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import providers
+from scrying_at_home import providers
 
 
 # (id, badge_label, tui_style, ansi_color, analytics_label, source_label,
@@ -155,3 +155,13 @@ def test_url_unknown_provider_sentinel():
     # Pinned: unknown providers return the sentinel rather than raising; the
     # picker's own guard refuses to open it.
     assert providers.provider_url("gemini", "conversation", "g1") == "Unknown provider: gemini"
+
+
+def test_ingest_dir_providers_is_the_web_scan_list():
+    ids = providers.ingest_dir_providers()
+    assert ids == ["claude", "chatgpt"]
+    # gemini is kind=='web' but surfaced-only: it must NOT leak into the scan list
+    # (the reason ingest_dir is an explicit flag rather than a kind=='web' test).
+    assert providers.get("gemini").kind == "web"
+    assert "gemini" not in ids
+    assert "claude-code" not in ids and "codex" not in ids

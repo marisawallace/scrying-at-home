@@ -47,8 +47,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from scrying_at_home.config.paths import REPO_ROOT
+
 DEFAULT_FIXTURE = (
-    Path(__file__).parent / "tests" / "fixtures" / "sample_codex_session_with_tools.jsonl"
+    REPO_ROOT / "tests" / "fixtures" / "sample_codex_session_with_tools.jsonl"
 )
 
 # The neutral timezone the redactor normalizes to; the guard allows only this.
@@ -172,7 +174,7 @@ def load_denylist(explicit: Path | None) -> list[str]:
     env = os.environ.get("FIXTURE_PII_DENYLIST")
     if env:
         candidates.append(Path(env))
-    candidates.append(Path(__file__).parent / ".fixture-denylist")
+    candidates.append(REPO_ROOT / ".fixture-denylist")
     for c in candidates:
         if c and c.exists():
             needles = []

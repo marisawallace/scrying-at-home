@@ -15,29 +15,22 @@ Action on Enter:
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import subprocess
 import sys
 import webbrowser
-from typing import List
 
-import providers
+from scrying_at_home import providers
+from scrying_at_home.config.paths import REPO_ROOT
+from scrying_at_home.search.result import highlight_spans
 import vendor_loader  # noqa: F401 — side-effect: prepend vendor/ to sys.path
 from prompt_toolkit import Application
-from prompt_toolkit.application import get_app
-from prompt_toolkit.formatted_text import ANSI, FormattedText, to_formatted_text
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.screen import Point
 from prompt_toolkit.layout.containers import ScrollOffsets
-
-
-def _strip_ansi(s: str) -> str:
-    return re.sub(r"\033\[[0-9;]*m", "", s)
 
 
 def _provider_label(result) -> tuple[str, str]:
@@ -51,22 +44,16 @@ def _provider_label(result) -> tuple[str, str]:
 
 
 def _highlight_query(text: str, query: str, exact: bool) -> FormattedText:
-    """Return FormattedText with query terms highlighted."""
-    terms = [query] if exact else [w for w in query.split() if w]
-    if not terms:
-        return FormattedText([("", text)])
+    """Return FormattedText with query terms highlighted.
 
-    pattern = re.compile("|".join(re.escape(t) for t in terms), re.IGNORECASE)
-    out: list[tuple[str, str]] = []
-    last = 0
-    for m in pattern.finditer(text):
-        if m.start() > last:
-            out.append(("", text[last : m.start()]))
-        out.append(("fg:ansiyellow bold", m.group()))
-        last = m.end()
-    if last < len(text):
-        out.append(("", text[last:]))
-    return FormattedText(out)
+    Maps the shared span segmenter (result.highlight_spans) onto prompt_toolkit
+    style tuples — the same matching algorithm engine.highlight_query renders to
+    ANSI, so the TUI and the printed output never diverge.
+    """
+    style = {True: "fg:ansiyellow bold", False: ""}
+    return FormattedText([
+        (style[is_match], chunk) for is_match, chunk in highlight_spans(text, query, exact)
+    ])
 
 
 def _render_result(result, query: str, exact: bool, selected: bool, current_host: str, demo: bool = False) -> tuple[FormattedText, int]:
@@ -101,7 +88,7 @@ def _render_result(result, query: str, exact: bool, selected: bool, current_host
     label, label_style = _provider_label(result)
     line([(label_style, f"[{label}] "), ("bold", result.name)], is_title=True)
 
-    from full_text_search_chats_archive import prettify_model
+    from scrying_at_home.search.engine import prettify_model
     model_label = prettify_model(result.model)
     if providers.is_local_cli(result.provider):
         extra = result.extra or {}
@@ -324,7 +311,7 @@ def act_on_choice(result, current_host: str, demo: bool = False) -> int:
 
 def view_choice(result, fmt: str = "markdown") -> int:
     """Launch view_conversation on the chosen result, then return."""
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "view_conversation.py")
+    script = str(REPO_ROOT / "view_conversation.py")
     cmd = [sys.executable, script, result.uuid, "--format", fmt]
     try:
         proc = subprocess.run(cmd)

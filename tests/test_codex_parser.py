@@ -15,7 +15,7 @@ import pytest
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import codex_parser as cxp
+from scrying_at_home.parsers import codex as cxp
 
 
 @pytest.fixture

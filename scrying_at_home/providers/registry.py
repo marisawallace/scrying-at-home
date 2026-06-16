@@ -17,7 +17,7 @@ keeps the module importable by search_index (which must NOT import
 full_text_search_chats_archive — it runs as __main__) once Codex needs provider
 facts there. So every function here takes PRIMITIVES (provider id, uuid, cwd,
 host, item_type), never a SearchResult. Display constants that also live elsewhere
-(e.g. the claude-code ANSI orange, == full_text_search_chats_archive.Colors.ORANGE)
+(e.g. the claude-code ANSI orange, == scrying_at_home.common.ansi.ORANGE)
 are duplicated here as literals rather than imported, to keep this a leaf.
 
 This module carries DISPLAY/ACTION facts only — never text extraction. That
@@ -67,6 +67,12 @@ class Provider:
                           # has no browsable URL; gemini has neither.
     account_slot: str     # meaning of the items.email column / SearchResult.email:
                           # "email" (web account) | "project-slug" (local-cli)
+    ingest_dir: bool = False
+                          # has a local zip-export ingest tree under
+                          # data_dir/<id>/<email>/{conversations,projects}
+                          # (claude, chatgpt) that the search scan, indexer, and
+                          # viewer walk. NOT kind=='web': gemini is web but
+                          # surfaced-only, so it has no ingest tree.
     resume_argv: tuple[str, ...] = field(default=())
                           # leading argv of the resume command (local-cli only),
                           # e.g. ("claude", "-r"); the session id is appended.
@@ -86,6 +92,7 @@ _PROVIDERS: dict[str, Provider] = {
         html_supported=True,
         browser_openable=True,
         account_slot="email",
+        ingest_dir=True,
     ),
     "chatgpt": Provider(
         id="chatgpt",
@@ -98,12 +105,13 @@ _PROVIDERS: dict[str, Provider] = {
         html_supported=True,
         browser_openable=True,
         account_slot="email",
+        ingest_dir=True,
     ),
     "claude-code": Provider(
         id="claude-code",
         badge_label="CLAUDE CODE",
         tui_style="fg:#ff8c00 bold",
-        ansi_color="\033[38;5;208m",  # == full_text_search_chats_archive.Colors.ORANGE
+        ansi_color="\033[38;5;208m",  # == scrying_at_home.common.ansi.ORANGE
         analytics_label="claude-code",
         source_label="Claude Code",
         kind="local-cli",
@@ -163,6 +171,14 @@ def all_providers() -> dict[str, Provider]:
     return dict(_PROVIDERS)
 
 
+def ingest_dir_providers() -> list[str]:
+    """Provider ids with a local zip-export ingest tree (claude, chatgpt) — the
+    single source for the web-export scan list the search scan, the indexer, and
+    the viewer walk. A flag, not kind=='web': gemini is web but surfaced-only (no
+    ingest tree), so a kind-based test would wrongly scan a gemini/ directory."""
+    return [pid for pid, p in _PROVIDERS.items() if p.ingest_dir]
+
+
 def is_local_cli(provider: str) -> bool:
     """True if `provider` is a local-CLI source (claude-code, codex): it carries
     a cwd/host and is resumed via a CLI rather than opened in a browser.
@@ -209,6 +225,8 @@ def provider_url(provider: str, item_type: str, uuid: str,
     """
     if provider == "claude":
         if item_type == "conversation":
+            # == scrying_at_home.common.constants.CLAUDE_CHAT_URL_PREFIX (kept inline to
+            # preserve this module's stdlib-only leaf discipline, like ORANGE).
             return f"https://claude.ai/chat/{uuid}"
         return f"https://claude.ai/project/{uuid}"
     if provider == "chatgpt":

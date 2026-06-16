@@ -10,12 +10,19 @@ Shared by full_text_search_chats_archive.py and view_conversation.py.
 
 from __future__ import annotations
 
-import json
 import re
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import Optional
+
+from scrying_at_home.common.text import truncate_name
+from scrying_at_home.common.constants import UNTITLED
+from scrying_at_home.parsers.transcript_jsonl import (
+    parse_jsonl_lines,
+    last_timestamped_line,
+    most_common_model,
+    build_turns,
+)
 
 # Sessions started via a slash command begin with harness-generated user lines
 # (<local-command-caveat> boilerplate, then the <command-name> invocation)
@@ -33,21 +40,10 @@ _COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 
 
 def parse_jsonl(filepath: Path) -> list[dict]:
-    """Read a JSONL file and return list of parsed JSON objects.
-
-    Skips malformed lines with a warning to stderr.
-    """
-    lines = []
+    """Read a JSONL file into a list of parsed JSON objects (blank lines skipped,
+    malformed lines warned to stderr)."""
     with open(filepath, "r", encoding="utf-8") as f:
-        for i, raw in enumerate(f, 1):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                lines.append(json.loads(raw))
-            except json.JSONDecodeError as e:
-                print(f"Warning: {filepath}:{i}: malformed JSON: {e}", file=sys.stderr)
-    return lines
+        return parse_jsonl_lines(f, filepath)
 
 
 def _first_user_prompt(lines: list[dict]) -> Optional[dict]:
@@ -61,14 +57,6 @@ def _first_user_prompt(lines: list[dict]) -> Optional[dict]:
             content = line.get("message", {}).get("content")
             if isinstance(content, str) and content.strip():
                 return line
-    return None
-
-
-def _last_timestamped_line(lines: list[dict]) -> Optional[dict]:
-    """Return the last line that has a timestamp."""
-    for line in reversed(lines):
-        if line.get("timestamp"):
-            return line
     return None
 
 
@@ -86,9 +74,7 @@ def extract_model(lines: list[dict]) -> str:
         model = line.get("message", {}).get("model")
         if model and model != "<synthetic>":
             counts[model] += 1
-    if not counts:
-        return ""
-    return counts.most_common(1)[0][0]
+    return most_common_model(counts)
 
 
 def extract_session_metadata(lines: list[dict]) -> dict:
@@ -98,7 +84,7 @@ def extract_session_metadata(lines: list[dict]) -> dict:
       session_id, cwd, git_branch, created_at, updated_at, name, model
     """
     first_prompt = _first_user_prompt(lines)
-    last_line = _last_timestamped_line(lines)
+    last_line = last_timestamped_line(lines)
 
     session_id = ""
     cwd = ""
@@ -176,65 +162,39 @@ def count_tool_uses(lines: list[dict]) -> "Counter[str]":
     return counts
 
 
-def extract_conversation_turns(lines: list[dict]) -> list[dict]:
-    """Extract structured conversation turns for markdown rendering.
+def _classify_turn_events(line: dict) -> list:
+    """Per-line (kind, value, timestamp) events for build_turns (Claude Code).
 
-    Returns list of dicts with keys:
-      - role: "user" | "assistant"
-      - timestamp: str
-      - content: str (for user: the prompt; for assistant: concatenated text blocks)
-      - tool_uses: list[str] (tool names, for assistant turns only)
-
-    Consecutive assistant lines are merged into a single turn.
-    User lines that are tool_results (content is a list) are skipped.
+    A user line with string content is one user event; an assistant line opens
+    the turn (pinning its timestamp to this first assistant line) and contributes
+    one event per text / tool_use block. Tool_result user lines (list content)
+    and thinking blocks produce nothing.
     """
-    turns = []
-    current_assistant = None
+    ts = line.get("timestamp", "")
+    msg_type = line.get("type")
+    if msg_type == "user":
+        content = line.get("message", {}).get("content")
+        if isinstance(content, str) and content.strip():
+            return [("user", content, ts)]
+        return []
+    if msg_type == "assistant":
+        events = [("assistant_open", None, ts)]
+        for block in line.get("message", {}).get("content", []):
+            block_type = block.get("type")
+            if block_type == "text" and block.get("text"):
+                events.append(("assistant_text", block["text"], ts))
+            elif block_type == "tool_use" and block.get("name"):
+                events.append(("tool", block["name"], ts))
+        return events
+    return []
 
-    def _flush_assistant():
-        nonlocal current_assistant
-        if current_assistant and (current_assistant["content"] or current_assistant["tool_uses"]):
-            turns.append(current_assistant)
-        current_assistant = None
 
-    for line in lines:
-        msg_type = line.get("type")
-
-        if msg_type == "user":
-            content = line.get("message", {}).get("content")
-            if isinstance(content, str) and content.strip():
-                _flush_assistant()
-                turns.append({
-                    "role": "user",
-                    "timestamp": line.get("timestamp", ""),
-                    "content": content,
-                    "tool_uses": [],
-                })
-            # tool_result user lines (content is a list) are skipped
-
-        elif msg_type == "assistant":
-            if current_assistant is None:
-                current_assistant = {
-                    "role": "assistant",
-                    "timestamp": line.get("timestamp", ""),
-                    "content": "",
-                    "tool_uses": [],
-                }
-
-            for block in line.get("message", {}).get("content", []):
-                block_type = block.get("type")
-                if block_type == "text" and block.get("text"):
-                    if current_assistant["content"]:
-                        current_assistant["content"] += "\n\n"
-                    current_assistant["content"] += block["text"]
-                elif block_type == "tool_use" and block.get("name"):
-                    tool_name = block["name"]
-                    if tool_name not in current_assistant["tool_uses"]:
-                        current_assistant["tool_uses"].append(tool_name)
-                # thinking blocks are skipped
-
-    _flush_assistant()
-    return turns
+def extract_conversation_turns(lines: list[dict]) -> list[dict]:
+    """Structured conversation turns for markdown rendering: consecutive
+    assistant lines merge into one turn, tool_result user lines are skipped. The
+    merge/flush rules live in build_turns; _classify_turn_events supplies the
+    Claude Code per-line interpretation."""
+    return build_turns(lines, _classify_turn_events)
 
 
 def find_session_file(cc_data_dir: Path, session_id: str) -> Optional[Path]:
@@ -293,14 +253,6 @@ def _slash_command_invocation(lines: list[dict]) -> str:
     return ""
 
 
-def _truncate_name(text: str, max_length: int) -> str:
-    # Take first line, collapse runs of whitespace
-    first_line = " ".join(text.strip().split("\n")[0].split())
-    if len(first_line) <= max_length:
-        return first_line
-    return first_line[:max_length - 1] + "\u2026"
-
-
 def derive_conversation_name(lines: list[dict], max_length: int = 80) -> str:
     """Get conversation name from first human prompt, truncated.
 
@@ -309,9 +261,9 @@ def derive_conversation_name(lines: list[dict], max_length: int = 80) -> str:
     """
     for line in lines:
         if _is_human_prompt(line):
-            return _truncate_name(line["message"]["content"], max_length)
+            return truncate_name(line["message"]["content"], max_length)
 
     command = _slash_command_invocation(lines)
     if command:
-        return _truncate_name(command, max_length)
-    return "(untitled)"
+        return truncate_name(command, max_length)
+    return UNTITLED

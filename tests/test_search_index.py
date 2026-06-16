@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import search_index as si
+from scrying_at_home.index import search_index as si
 
 
 # ---------------------------------------------------------------------------
@@ -211,9 +211,9 @@ def test_llm_meta_project_keeps_top_level_updated_at():
 
 
 # ---------------------------------------------------------------------------
-# make_cc_item_meta — Claude Code session metadata → item row (mirror of the
-# make_llm_item_meta tests above; the cc/codex meta builders otherwise have no
-# direct unit coverage).
+# make_local_cli_item_meta — Claude Code / Codex session metadata → item row
+# (mirror of the make_llm_item_meta tests above). The cc/codex cases below feed
+# the one shared builder with each provider's metadata shape.
 # ---------------------------------------------------------------------------
 
 def test_cc_meta_from_parsed_metadata():
@@ -222,7 +222,7 @@ def test_cc_meta_from_parsed_metadata():
         "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
         "name": "My CC Session", "model": "claude-opus-4-6",
     }
-    meta = si.make_cc_item_meta(metadata, ["hello world"])
+    meta = si.make_local_cli_item_meta(metadata, ["hello world"])
     assert meta["uuid"] == "s1"
     assert meta["item_type"] == "conversation"
     # cc names are always non-empty, so the display name equals the raw name.
@@ -243,7 +243,7 @@ def test_cc_meta_model_defaults_empty_and_no_preview_without_texts():
         "session_id": "s1", "cwd": "/home/u/app", "git_branch": "",
         "created_at": "c", "updated_at": "u", "name": "n",
     }  # no "model" key
-    meta = si.make_cc_item_meta(metadata, [])
+    meta = si.make_local_cli_item_meta(metadata, [])
     assert meta["model"] == ""  # .get("model", "") default
     assert meta["preview"] == ""
     assert meta["has_preview"] is False
@@ -255,7 +255,7 @@ def test_codex_meta_from_parsed_metadata():
         "created_at": "2026-06-13T00:00:00Z", "updated_at": "2026-06-13T01:00:00Z",
         "name": "Add codex support", "model": "gpt-5.5",
     }
-    meta = si.make_codex_item_meta(metadata, ["hello world"])
+    meta = si.make_local_cli_item_meta(metadata, ["hello world"])
     assert meta["uuid"] == "cx-1"
     assert meta["item_type"] == "conversation"
     assert meta["name"] == "Add codex support"
@@ -273,7 +273,7 @@ def test_codex_meta_model_defaults_empty_and_no_preview_without_texts():
         "session_id": "cx-1", "cwd": "/home/u/repo", "git_branch": "",
         "created_at": "c", "updated_at": "u", "name": "n",
     }  # no "model" key
-    meta = si.make_codex_item_meta(metadata, [])
+    meta = si.make_local_cli_item_meta(metadata, [])
     assert meta["model"] == ""
     assert meta["preview"] == ""
     assert meta["has_preview"] is False
@@ -326,9 +326,20 @@ def test_schema_identity_changes_when_source_changes(tmp_path):
     for d in (a, b):
         d.mkdir()
         for name in si.SCHEMA_SOURCE_FILES:
+            # SCHEMA_SOURCE_FILES may carry subdir paths (e.g. scrying_at_home/common/...)
+            (d / name).parent.mkdir(parents=True, exist_ok=True)
             (d / name).write_text("def extract(): return ['original']\n")
-    (b / "claude_code_parser.py").write_text("def extract(): return ['changed']\n")
+    (b / "scrying_at_home/parsers/claude_code.py").write_text("def extract(): return ['changed']\n")
     assert si.schema_identity(a) != si.schema_identity(b)
+
+
+def test_index_column_tuples_drive_sql():
+    # Placeholder counts are len-derived from the column tuples, so INSERTs can't
+    # drift; the rescore/browse projections derive key + sql-expr together.
+    assert si._ITEMS_INSERT_SQL.count("?") == len(si.ITEMS_COLUMNS)
+    assert si._FILES_INSERT_SQL.count("?") == len(si.FILES_COLUMNS) - 1  # id autoinc
+    assert len(si._ROW_KEYS) == len(si._ROW_SELECT.split(","))
+    assert len(si._BROWSE_KEYS) == len(si._BROWSE_SELECT.split(","))
 
 
 def test_open_index_rebuilds_when_identity_differs(tmp_path):

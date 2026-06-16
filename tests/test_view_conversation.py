@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import view_conversation as vc
+from scrying_at_home.view import render as vc
 
 PROJECT = {
     "uuid": "p-1",

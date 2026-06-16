@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import analytics
-import full_text_search_chats_archive as fts
+from scrying_at_home.search import analytics
+from scrying_at_home.search import engine as fts
 
 
 def _result(provider="claude", created_at="2026-01-15T09:30:00Z", extra=None):

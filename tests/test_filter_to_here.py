@@ -8,7 +8,8 @@ from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import full_text_search_chats_archive as fts
+from scrying_at_home.search import engine as fts
+from scrying_at_home.common.ansi import strip_ansi
 
 
 def _result(provider="claude-code", host="laptop", cwd="/home/me/proj"):
@@ -93,20 +94,15 @@ def test_float_is_stable_when_all_same_host():
 # --- here_miss_hint() ---------------------------------------------------------
 
 
-def _strip_ansi(s: str) -> str:
-    import re
-    return re.sub(r"\033\[[0-9;]*m", "", s)
-
-
 def test_hint_shows_dir_host_and_source():
-    hint = _strip_ansi(fts.here_miss_hint(Path("/home/me/proj"), "laptop", False, "claude-code"))
+    hint = strip_ansi(fts.here_miss_hint(Path("/home/me/proj"), "laptop", False, "claude-code"))
     assert "dir:    /home/me/proj" in hint
     assert "host:   laptop (system hostname)" in hint  # host_is_explicit=False
     assert "source: claude-code" in hint
 
 
 def test_hint_labels_machine_name_when_explicit():
-    hint = _strip_ansi(fts.here_miss_hint(Path("/srv/explicit"), "laptop", True, "codex"))
+    hint = strip_ansi(fts.here_miss_hint(Path("/srv/explicit"), "laptop", True, "codex"))
     assert "dir:    /srv/explicit" in hint
     assert "host:   laptop (MACHINE_NAME)" in hint  # host_is_explicit=True
     assert "source: codex" in hint

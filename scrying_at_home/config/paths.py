@@ -39,6 +39,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# The repository root, derived from this module's location
+# (scrying_at_home/config/paths.py -> parents[2]). This is the stable anchor the
+# root entry-point shims and the moved CLIs use for the default .env, the assets/
+# stylesheet, migration paths, and anomaly logs — replacing the old
+# Path(__file__).parent, which used to be the repo root only because the scripts
+# lived there. The seven entry shims stay at the repo root, so this holds.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 # Single sync root - everything lives under here
 DATA_ROOT = Path("data")
 
@@ -46,6 +54,12 @@ DATA_ROOT = Path("data")
 LLM_DATA_SUBDIR = DATA_ROOT / "llm_data"
 ARCHIVED_EXPORTS_SUBDIR = DATA_ROOT / "archived_exports"
 LOCAL_VIEWS_SUBDIR = DATA_ROOT / "local_views"
+
+# The web-export tree stores each provider's items under
+# data_dir/<provider>/<email>/<subdir>, mapping subdir -> item_type. One
+# definition, walked by the search scan, the indexer (scan_disk), and the
+# viewer's uuid lookup; the writer (sync) mirrors the same two subdir names.
+WEB_EXPORT_SUBDIRS = (("conversations", "conversation"), ("projects", "project"))
 
 # External data sources for Claude Code conversations (JSONL archives).
 # Configured via CLAUDE_CODE_SOURCES in .env as comma-separated host=path
@@ -149,12 +163,31 @@ def resolve_env_path(script_dir: Path, config_arg: str | None) -> Path:
     With an explicit --config value, use it (expanduser, relative to cwd).
     Otherwise fall back to the script-local default, unchanged behavior.
 
-    Validation (erroring on an explicit-but-missing path) belongs in the
-    imperative shell of each entry point, not here, so this stays pure.
+    Validation (erroring on an explicit-but-missing path) lives in
+    load_env_or_exit, the shared imperative shell, not here, so this stays pure.
     """
     if config_arg:
         return Path(config_arg).expanduser()
     return script_dir / ".env"
+
+
+def add_config_arg(parser) -> None:
+    """Add the shared ``--config PATH`` flag (the .env override) to a parser."""
+    parser.add_argument(
+        "--config", metavar="PATH", default=None,
+        help="Path to the .env config file (default: alongside this script)",
+    )
+
+
+def load_env_or_exit(script_dir: Path, config_arg: str | None) -> dict:
+    """Resolve the .env path (honoring --config), error-and-exit when an explicit
+    --config file is missing, and return the loaded config dict — the shared
+    imperative shell behind every entry point's config load."""
+    env_path = resolve_env_path(script_dir, config_arg)
+    if config_arg and not env_path.is_file():
+        print(f"Error: --config file not found: {env_path}", file=sys.stderr)
+        sys.exit(1)
+    return load_env_file(env_path)
 
 
 def active_env_values(text: str, key: str) -> list[str]:
@@ -406,6 +439,45 @@ def resolve_host_name(config: dict) -> str:
     so a hand-picked name is more reliable for cross-machine search attribution.
     """
     return explicit_host_name(config) or normalize_hostname(socket.gethostname())
+
+
+def codex_home() -> Path:
+    """The Codex home directory, honoring $CODEX_HOME (default ~/.codex).
+
+    Shared by codex_sync (the archival hook) and migration 004, so the
+    'CODEX_HOME' env key and the '~/.codex' default live in exactly one place.
+    """
+    raw = os.environ.get("CODEX_HOME", "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".codex"
+
+
+def resolve_provider_archive_dir(
+    config: dict,
+    sources: list[tuple[str, Path]],
+    *,
+    env_key: str,
+    env_file: Path,
+    setup_command: str,
+) -> Path:
+    """Select this machine's archive directory for a local-CLI provider.
+
+    Shared by the Claude Code and Codex sync adapters, which differ only in their
+    env key, the parsed `sources`, and the migration named in the setup hint.
+    Resolves the host via resolve_host_name(config) and returns the matching
+    entry's Path, raising RuntimeError (with the setup hint) when `sources` is
+    unset or carries no entry for this host.
+    """
+    if not sources:
+        raise RuntimeError(
+            f"{env_key} is not set in {env_file}. Run `{setup_command}` to configure."
+        )
+    host = resolve_host_name(config)
+    for entry_host, path in sources:
+        if entry_host == host:
+            return path
+    raise RuntimeError(
+        f"No entry for host {host!r} in {env_key}. Run `{setup_command}` on this machine."
+    )
 
 
 def _default_open_command(path: Path) -> list[str] | None:

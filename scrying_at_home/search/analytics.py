@@ -17,14 +17,15 @@ prints format_report().
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, List, Optional, Sequence, Tuple
 
-import providers
+from scrying_at_home import providers
+from scrying_at_home.common.timestamps import parse_iso, to_local
 
 if TYPE_CHECKING:  # avoid a circular import at runtime
-    from full_text_search_chats_archive import SearchResult
+    from scrying_at_home.search.engine import SearchResult
 
 
 # Friendly per-provider labels, derived from the provider registry so this
@@ -40,31 +41,11 @@ WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 # Pure helpers
 # ---------------------------------------------------------------------------
 
-def parse_dt(value: str) -> Optional[datetime]:
-    """Parse an ISO 8601 timestamp into a tz-aware datetime (UTC if naive).
-
-    Returns None for empty/malformed values so callers can skip them. Accepts a
-    bare date ("2026-01-02") as midnight UTC, and tolerates the trailing 'Z'.
-    """
-    if not value or not isinstance(value, str):
-        return None
-    text = value.strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        # Fall back to a bare date prefix (handles odd suffixes).
-        try:
-            dt = datetime.fromisoformat(text[:10])
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def to_local(dt: datetime) -> datetime:
-    """Convert a tz-aware datetime to the machine's local timezone."""
-    return dt.astimezone()
+# The ISO-parse rule (incl. the naive->UTC coercion) and local-tz conversion
+# live in scrying_at_home.common.timestamps now, so there is one parser, not several.
+# parse_dt stays as a thin module-local alias — used across this module and
+# pinned by tests.
+parse_dt = parse_iso
 
 
 def bar(value: int, max_value: int, width: int = 24) -> str:

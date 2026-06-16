@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import sync_local_chats_archive as sync
+from scrying_at_home.sync import local_chats as sync
 
 
 def _provider():
@@ -49,3 +49,23 @@ def test_missing_id_exits_cleanly_not_keyerror():
 def test_no_usable_timestamp_exits_cleanly_not_typeerror():
     with pytest.raises(SystemExit):
         _provider()._normalize_conversation({"id": "abc", "title": "t", "create_time": None})
+
+
+def test_created_at_is_utc_not_local_wall_clock():
+    # Regression: create_time (epoch) must store a UTC instant, not local
+    # wall-clock mislabeled 'Z'. 1704103200 == 2024-01-01T10:00:00Z; under a
+    # non-UTC zone the old code stored the offset-shifted wall-clock.
+    import os
+    import time
+    prev = os.environ.get("TZ")
+    os.environ["TZ"] = "America/New_York"
+    time.tzset()
+    try:
+        out = _provider()._normalize_conversation({"id": "abc", "title": "t", "create_time": 1704103200})
+        assert out["created_at"] == "2024-01-01T10:00:00Z"
+    finally:
+        if prev is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = prev
+        time.tzset()

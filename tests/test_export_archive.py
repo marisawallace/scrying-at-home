@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import export_archive as ex
-import full_text_search_chats_archive as fts
+from scrying_at_home.cli import export as ex
+from scrying_at_home.search import engine as fts
 
 
 def _result(provider="claude", name="Hello World", created_at="2026-01-02T09:00:00Z",

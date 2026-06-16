@@ -10,7 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from full_text_search_chats_archive import (  # noqa: E402
+from scrying_at_home.search.engine import (  # noqa: E402
     extract_text_from_chatgpt_conversation,
     extract_text_from_conversation,
 )

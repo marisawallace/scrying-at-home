@@ -20,7 +20,7 @@ import pytest
 
 # Add project root to path (mirrors the other test modules).
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import fixture_pii_audit as fa
+from tools import fixture_pii_audit as fa
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 JSONL_FIXTURES = sorted(FIXTURE_DIR.glob("*.jsonl"))

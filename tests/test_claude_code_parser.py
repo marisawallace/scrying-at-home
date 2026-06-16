@@ -9,7 +9,7 @@ import pytest
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-import claude_code_parser as ccp
+from scrying_at_home.parsers import claude_code as ccp
 
 
 @pytest.fixture

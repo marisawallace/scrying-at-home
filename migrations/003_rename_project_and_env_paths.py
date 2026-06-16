@@ -75,16 +75,16 @@ REPO_MARKER = "full_text_search_chats_archive.py"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-# The project's old and new names live in paths.py as the (legacy) cache-dir
+# The project's old and new names live in scrying_at_home/config/paths.py as the (legacy) cache-dir
 # names — the cache dir is named after the project, and paths.py documents the
 # rename there. Reuse them so the literals don't drift across the codebase.
-from paths import CACHE_DIR_NAME as NEW_NAME  # noqa: E402  ("scrying-at-home")
-from paths import LEGACY_CACHE_DIR_NAME as OLD_NAME  # noqa: E402  ("clauding-at-home")
-from paths import parse_env_assignment, parse_sources_string  # noqa: E402
+from scrying_at_home.config.paths import CACHE_DIR_NAME as NEW_NAME  # noqa: E402  ("scrying-at-home")
+from scrying_at_home.config.paths import LEGACY_CACHE_DIR_NAME as OLD_NAME  # noqa: E402  ("clauding-at-home")
+from scrying_at_home.config.paths import parse_env_assignment, parse_sources_string  # noqa: E402
 
 # Reuse setup.py's dotfile discovery and file-edit plumbing so this migration
 # looks for aliases exactly where setup.py wrote them, and backs up the same way.
-from setup import (  # noqa: E402
+from scrying_at_home.cli.setup import (  # noqa: E402
     ALIAS_BLOCK_HEADER,
     _backup,
     _prompt_yn,

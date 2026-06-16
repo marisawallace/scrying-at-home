@@ -18,38 +18,33 @@ model; and skip ``reasoning`` entirely.
 This module exposes the same top-level functions with the same signatures as
 ``claude_code_parser`` so it satisfies ``search_index.TranscriptParser`` and the
 indexer, viewer, and search CLI consume it unchanged. Like that module it is a
-leaf: stdlib only, so anything (including ``search_index``) may import it.
+leaf: stdlib plus the stdlib-only ``scrying_at_home.common`` helpers, so anything
+(including ``search_index``) may import it.
 
 Shared by full_text_search_chats_archive.py and view_conversation.py.
 """
 
 from __future__ import annotations
 
-import json
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+from scrying_at_home.common.text import truncate_name
+from scrying_at_home.common.constants import UNTITLED
+from scrying_at_home.parsers.transcript_jsonl import (
+    parse_jsonl_lines,
+    last_timestamped_line,
+    most_common_model,
+    build_turns,
+)
+
 
 def parse_jsonl(filepath: Path) -> list[dict]:
-    """Read a JSONL file and return list of parsed JSON objects.
-
-    Skips malformed lines with a warning to stderr. Deliberately duplicates
-    claude_code_parser.parse_jsonl (15 lines) to keep the two transcript
-    parsers independent leaves rather than coupling them through a shared import.
-    """
-    lines = []
+    """Read a JSONL file into a list of parsed JSON objects (blank lines skipped,
+    malformed lines warned to stderr)."""
     with open(filepath, "r", encoding="utf-8") as f:
-        for i, raw in enumerate(f, 1):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                lines.append(json.loads(raw))
-            except json.JSONDecodeError as e:
-                print(f"Warning: {filepath}:{i}: malformed JSON: {e}", file=sys.stderr)
-    return lines
+        return parse_jsonl_lines(f, filepath)
 
 
 def _payload(line: dict) -> dict:
@@ -86,14 +81,6 @@ def _event_text(line: dict, event_type: str) -> Optional[str]:
     return None
 
 
-def _last_timestamped_line(lines: list[dict]) -> Optional[dict]:
-    """Return the last line that has a timestamp."""
-    for line in reversed(lines):
-        if line.get("timestamp"):
-            return line
-    return None
-
-
 def extract_model(lines: list[dict]) -> str:
     """The model that did the work in a Codex session: the most-used model id
     across ``turn_context`` records (one per turn), which is the only place the
@@ -107,22 +94,20 @@ def extract_model(lines: list[dict]) -> str:
         model = _payload(line).get("model")
         if model:
             counts[model] += 1
-    if not counts:
-        return ""
-    return counts.most_common(1)[0][0]
+    return most_common_model(counts)
 
 
 def extract_session_metadata(lines: list[dict]) -> dict:
     """Extract metadata from parsed JSONL lines.
 
     Returns dict with keys (matching the claude_code_parser contract exactly so
-    make_codex_item_meta / the indexer consume it unchanged):
+    make_local_cli_item_meta / the indexer consume it unchanged):
       session_id, cwd, git_branch, created_at, updated_at, name, model
 
     session_id/cwd/created_at come from the ``session_meta`` record; model from
     ``turn_context``; git_branch is always "" (Codex records no git info)."""
     meta = _session_meta(lines)
-    last_line = _last_timestamped_line(lines)
+    last_line = last_timestamped_line(lines)
 
     session_id = meta.get("id", "")
     cwd = meta.get("cwd", "")
@@ -185,73 +170,37 @@ def count_tool_uses(lines: list[dict]) -> "Counter[str]":
     return counts
 
 
-def extract_conversation_turns(lines: list[dict]) -> list[dict]:
-    """Extract structured conversation turns for markdown/HTML rendering.
+def _classify_turn_events(line: dict) -> list:
+    """Per-line (kind, value, timestamp) events for build_turns (Codex).
 
-    Returns list of dicts with keys:
-      - role: "user" | "assistant"
-      - timestamp: str
-      - content: str (user: the prompt; assistant: concatenated agent_message text)
-      - tool_uses: list[str] (tool names, for assistant turns only)
-
-    Built from the clean ``event_msg`` stream: a ``user_message`` flushes any
-    pending assistant turn and emits a user turn; ``agent_message`` text and the
-    ``response_item`` tool-call names that fall between two user messages
-    accumulate into one assistant turn (mirroring how claude_code_parser merges
-    consecutive assistant lines). Reasoning, raw response_item messages, and
-    turn-lifecycle records are skipped.
+    Built from the clean event_msg stream plus response_item tool calls:
+    user_message -> a user event; agent_message -> assistant text; a
+    function_call / custom_tool_call response_item -> a tool event. Reasoning,
+    raw response_item messages, and turn-lifecycle records produce nothing. No
+    assistant_open: the assistant turn is pinned to its first agent_message /
+    tool call (build_turns' lazy open), matching the original behavior.
     """
-    turns: list[dict] = []
-    current_assistant: Optional[dict] = None
+    ts = line.get("timestamp", "")
+    user_text = _event_text(line, "user_message")
+    if user_text:
+        return [("user", user_text, ts)]
+    agent_text = _event_text(line, "agent_message")
+    if agent_text:
+        return [("assistant_text", agent_text, ts)]
+    if line.get("type") == "response_item":
+        payload = _payload(line)
+        if payload.get("type") in ("function_call", "custom_tool_call"):
+            name = payload.get("name")
+            if name:
+                return [("tool", name, ts)]
+    return []
 
-    def _flush_assistant():
-        nonlocal current_assistant
-        if current_assistant and (current_assistant["content"] or current_assistant["tool_uses"]):
-            turns.append(current_assistant)
-        current_assistant = None
 
-    def _ensure_assistant(timestamp: str):
-        nonlocal current_assistant
-        if current_assistant is None:
-            current_assistant = {
-                "role": "assistant",
-                "timestamp": timestamp,
-                "content": "",
-                "tool_uses": [],
-            }
-
-    for line in lines:
-        timestamp = line.get("timestamp", "")
-        user_text = _event_text(line, "user_message")
-        if user_text:
-            _flush_assistant()
-            turns.append({
-                "role": "user",
-                "timestamp": timestamp,
-                "content": user_text,
-                "tool_uses": [],
-            })
-            continue
-
-        agent_text = _event_text(line, "agent_message")
-        if agent_text:
-            _ensure_assistant(timestamp)
-            if current_assistant["content"]:
-                current_assistant["content"] += "\n\n"
-            current_assistant["content"] += agent_text
-            continue
-
-        if line.get("type") == "response_item":
-            payload = _payload(line)
-            if payload.get("type") in ("function_call", "custom_tool_call"):
-                name = payload.get("name")
-                if name:
-                    _ensure_assistant(timestamp)
-                    if name not in current_assistant["tool_uses"]:
-                        current_assistant["tool_uses"].append(name)
-
-    _flush_assistant()
-    return turns
+def extract_conversation_turns(lines: list[dict]) -> list[dict]:
+    """Structured conversation turns (markdown/HTML) from the clean event_msg
+    stream + response_item tool calls. Merge/flush rules live in build_turns;
+    _classify_turn_events supplies the Codex per-line interpretation."""
+    return build_turns(lines, _classify_turn_events)
 
 
 def find_session_file(codex_data_dir: Path, session_id: str) -> Optional[Path]:
@@ -270,14 +219,6 @@ def find_session_file(codex_data_dir: Path, session_id: str) -> Optional[Path]:
     return None
 
 
-def _truncate_name(text: str, max_length: int) -> str:
-    # Take first line, collapse runs of whitespace
-    first_line = " ".join(text.strip().split("\n")[0].split())
-    if len(first_line) <= max_length:
-        return first_line
-    return first_line[:max_length - 1] + "…"
-
-
 def derive_conversation_name(lines: list[dict], max_length: int = 80) -> str:
     """Get conversation name from the first typed human prompt, truncated.
 
@@ -288,5 +229,5 @@ def derive_conversation_name(lines: list[dict], max_length: int = 80) -> str:
     for line in lines:
         text = _event_text(line, "user_message")
         if text:
-            return _truncate_name(text, max_length)
-    return "(untitled)"
+            return truncate_name(text, max_length)
+    return UNTITLED

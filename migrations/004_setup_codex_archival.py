@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shlex
 import socket
 import sys
@@ -58,11 +57,12 @@ REPO_MARKER = "codex_sync.py"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
-from paths import (  # noqa: E402
+from scrying_at_home.config.paths import (  # noqa: E402
     CLAUDE_CODE_HOST_ENV_KEY,
     CODEX_SOURCES_ENV_KEY,
     MACHINE_NAME_ENV_KEY,
     active_env_values,
+    codex_home,
     explicit_host_name,
     load_env_file,
     normalize_hostname,
@@ -72,12 +72,6 @@ from paths import (  # noqa: E402
     resolve_invocation,
     set_env_value,
 )
-
-
-def codex_home() -> Path:
-    """The Codex home directory, honoring $CODEX_HOME (default ~/.codex)."""
-    raw = os.environ.get("CODEX_HOME", "").strip()
-    return Path(raw).expanduser() if raw else Path.home() / ".codex"
 
 
 def find_repo_root() -> Path | None:
@@ -342,7 +336,7 @@ def main():
 
     # 4. Optional backfill of existing $CODEX_HOME/sessions/ history, using the
     #    same sweep code as the runtime hook so behavior matches exactly.
-    import codex_sync  # noqa: E402
+    from scrying_at_home.sync import codex_sync  # noqa: E402
     # Bind the sync module to the archive we just resolved (its module-level
     # CODEX_DIR is read at call time; the archive comes from .env via the sweep).
     if sessions_dir.exists():

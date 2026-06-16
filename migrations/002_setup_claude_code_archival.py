@@ -52,7 +52,7 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 # without each helper site repeating the sys.path dance.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
-from paths import (  # noqa: E402
+from scrying_at_home.config.paths import (  # noqa: E402
     CLAUDE_CODE_HOST_ENV_KEY,
     CLAUDE_CODE_SOURCES_ENV_KEY,
     MACHINE_NAME_ENV_KEY,
@@ -443,7 +443,7 @@ def main():
 
     # 4. Optional backfill of existing ~/.claude/projects/ history.
     #    Uses the same sync code as the runtime hook so behavior matches.
-    import claude_code_hook as cch  # noqa: E402
+    from scrying_at_home.sync import claude_code_hook as cch  # noqa: E402
 
     projects_dir = cch.CLAUDE_PROJECTS_DIR
     if projects_dir.exists():
