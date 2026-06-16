@@ -304,6 +304,60 @@ def test_search_no_query_browses_all_newest_first(isolated_workspace, sample_cla
 
 
 @pytest.mark.integration
+def test_search_uuid_lookup_single_and_multiple(isolated_workspace, sample_claude_export,
+                                                run_cli, test_env_file):
+    """--uuid looks conversations up directly by id: one uuid yields just that
+    item, a comma-separated list yields exactly that set, and an unknown uuid
+    yields nothing."""
+    zip_dest = isolated_workspace / "data-2025-01-05.zip"
+    shutil.copy(sample_claude_export, zip_dest)
+
+    sync_result = run_cli(
+        "sync_local_chats_archive.py", "--claude",
+        config=test_env_file, cwd=isolated_workspace,
+    )
+    assert sync_result.returncode == 0, "Setup sync failed"
+
+    # Single uuid -> exactly that one conversation, no query needed.
+    single = run_cli(
+        "full_text_search_chats_archive.py", "--uuid", "conv-uuid-002", "-j",
+        config=test_env_file, cwd=isolated_workspace,
+    )
+    assert single.returncode == 0, single.stderr
+    single_results = json.loads(single.stdout)
+    assert [r["uuid"] for r in single_results] == ["conv-uuid-002"]
+
+    # Comma-separated list -> exactly that set (order-independent), case-insensitive.
+    multi = run_cli(
+        "full_text_search_chats_archive.py", "--uuid", "CONV-UUID-001,conv-uuid-002", "-j",
+        config=test_env_file, cwd=isolated_workspace,
+    )
+    assert multi.returncode == 0, multi.stderr
+    multi_results = json.loads(multi.stdout)
+    assert {r["uuid"] for r in multi_results} == {"conv-uuid-001", "conv-uuid-002"}
+
+    # Unknown uuid -> empty result set (renders "No results found" in the picker/list).
+    miss = run_cli(
+        "full_text_search_chats_archive.py", "--uuid", "no-such-uuid", "-j",
+        config=test_env_file, cwd=isolated_workspace,
+    )
+    assert miss.returncode == 0, miss.stderr
+    assert json.loads(miss.stdout) == []
+
+
+@pytest.mark.integration
+def test_search_uuid_rejects_stats(isolated_workspace, run_cli, test_env_file):
+    """--uuid and --stats are mutually exclusive: --stats reports over the whole
+    archive, so narrowing it to specific conversations is rejected up front."""
+    result = run_cli(
+        "full_text_search_chats_archive.py", "--uuid", "conv-uuid-002", "--stats",
+        config=test_env_file, cwd=isolated_workspace,
+    )
+    assert result.returncode == 1
+    assert "--uuid cannot be combined with --stats" in result.stderr
+
+
+@pytest.mark.integration
 def test_search_scoring_accuracy(isolated_workspace, sample_claude_export, run_cli, test_env_file):
     """Test that search scoring ranks results correctly."""
     # Setup: Import conversations

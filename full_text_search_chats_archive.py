@@ -931,6 +931,27 @@ def filter_to_here(results: List[SearchResult], here_dir: Path) -> List[SearchRe
     ]
 
 
+def parse_uuid_filter(raw: str) -> List[str]:
+    """Parse the --uuid value — one UUID or a comma-separated list — into a
+    lowercased list, trimming whitespace and dropping empty entries.
+
+    UUIDs are case-insensitive, so lowercasing here lets a pasted upper/mixed
+    case id match the lowercase ids stored across every source.
+    """
+    return [u.strip().lower() for u in raw.split(",") if u.strip()]
+
+
+def filter_to_uuids(results: List[SearchResult], uuids: set) -> List[SearchResult]:
+    """Keep only results whose uuid is in `uuids` (compared case-insensitively).
+
+    Backs --uuid: direct lookup of one or more known conversations, regardless
+    of provider. Order is preserved; the caller's later sort decides final
+    ordering. An empty intersection returns [], which every output path renders
+    as the normal "No results found." message.
+    """
+    return [r for r in results if r.uuid.lower() in uuids]
+
+
 def float_same_host_first(results: List[SearchResult], host: str) -> List[SearchResult]:
     """Stable-partition `results` so sessions recorded on `host` come first,
     preserving the existing order within each group.
@@ -1234,6 +1255,8 @@ Examples:
   %(prog)s "bugfix" --here                  # local-CLI sessions from this dir, any host (this host first)
   %(prog)s --here                           # this dir's local-CLI sessions, newest first
   %(prog)s "bugfix" --here ~/code/proj      # local-CLI sessions from another dir, any host
+  %(prog)s --uuid 0199...                   # look up one conversation by UUID
+  %(prog)s --uuid 0199...,5fb4...           # look up several conversations by UUID
         """
     )
 
@@ -1296,6 +1319,13 @@ Examples:
         default=None,
         metavar="PATH",
         help="Only local-CLI sessions (Claude Code, Codex) run from PATH (and subdirs) on any host, with this host's sessions ranked first; PATH defaults to the current directory"
+    )
+
+    parser.add_argument(
+        "--uuid",
+        metavar="UUID[,UUID...]",
+        default=None,
+        help="Look up conversation(s) by UUID directly: keep only results whose UUID matches one of the comma-separated values"
     )
 
     parser.add_argument(
@@ -1367,6 +1397,15 @@ def main():
     if here_dir is not None and args.source == "llm":
         print("Error: --here cannot be combined with -s llm", file=sys.stderr)
         sys.exit(1)
+
+    # --uuid: direct lookup of one or more known conversations. Parsed up front
+    # into a set (None when the flag was not given) and applied as a post-gather
+    # filter below, so it composes with every source, --here, and any query.
+    # Incompatible with --stats, which reports over the whole archive by design.
+    if args.stats and args.uuid is not None:
+        print("Error: --uuid cannot be combined with --stats", file=sys.stderr)
+        sys.exit(1)
+    uuid_filter = set(parse_uuid_filter(args.uuid)) if args.uuid is not None else None
 
     # Get data directory
     script_dir = Path(__file__).parent.resolve()
@@ -1496,6 +1535,13 @@ def main():
             elif args.source == "codex":
                 print(f"Error: {CODEX_SOURCES_ENV_KEY} not configured in .env", file=sys.stderr)
                 sys.exit(1)
+
+    # --uuid: narrow the gathered results to the requested conversation(s). A
+    # browse over all sources (the no-query default when --uuid is used alone)
+    # supplies the candidates; this keeps only the matching UUIDs. An empty
+    # result falls through to the normal "No results found." path everywhere.
+    if uuid_filter is not None:
+        results = filter_to_uuids(results, uuid_filter)
 
     # --here diagnostics: only when nothing matched here across every local-CLI
     # source (results holds only here-filtered local-CLI items, since --here skips
