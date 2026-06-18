@@ -39,7 +39,7 @@ def test_view_codex_session(codex_workspace, run_cli):
         config=codex_workspace / ".env",
     )
     assert result.returncode == 0, result.stderr
-    assert "Found:" in result.stdout
+    assert "Found" in result.stdout
 
 
 @pytest.mark.integration

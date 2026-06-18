@@ -40,7 +40,7 @@ def test_view_claude_code_session(claude_code_workspace, run_cli):
     print(f"\nSTDERR:\n{result.stderr}")
 
     assert result.returncode == 0
-    assert "Found:" in result.stdout
+    assert "Found" in result.stdout
     assert "Created:" in result.stdout
 
 

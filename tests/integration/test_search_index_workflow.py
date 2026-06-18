@@ -586,10 +586,10 @@ def test_view_uuid_lookup_with_and_without_index(full_archive_workspace, repo_ro
 
     result = _run_cli(repo_root, ws, "view_conversation.py", "conv-uuid-001", "--no-open")
     assert result.returncode == 0, result.stderr
-    assert "Found:" in result.stdout
+    assert "Found" in result.stdout
 
     # Without an index the scan fallback must still find it
     (ws / "search_index.db").unlink()
     result = _run_cli(repo_root, ws, "view_conversation.py", "conv-uuid-001", "--no-open")
     assert result.returncode == 0, result.stderr
-    assert "Found:" in result.stdout
+    assert "Found" in result.stdout

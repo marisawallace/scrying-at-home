@@ -21,6 +21,7 @@ from scrying_at_home.config.paths import REPO_ROOT, add_config_arg, load_env_or_
 from scrying_at_home.common.timestamps import parse_iso
 from scrying_at_home.common.text import normalize_uuid
 from scrying_at_home.common.constants import UNTITLED
+from scrying_at_home.common.ansi import muted, warning, success, error
 
 
 def find_conversation_file_via_index(config: dict, uuid: str) -> Optional[tuple[Path, str]]:
@@ -712,7 +713,7 @@ Examples:
 
     # Find conversation file — index lookup first, then LLM provider scan,
     # then Claude Code
-    print(f"Searching for conversation {args.uuid}...")
+    print(muted(f"Searching for conversation {args.uuid}..."))
     result = find_conversation_file_via_index(config, args.uuid)
     if not result:
         result = find_conversation_file(data_dir, args.uuid)
@@ -736,11 +737,10 @@ Examples:
                 break
 
     if not result:
-        print(f"Error: Conversation with UUID {args.uuid} not found.", file=sys.stderr)
+        print(error(f"Error: Conversation with UUID {args.uuid} not found."), file=sys.stderr)
         sys.exit(1)
 
     conv_file, provider = result
-    print(f"Found: {conv_file}")
 
     # Archive layout puts projects under <user>/projects/; everything else
     # (conversations/, Claude Code JSONL) renders as a conversation.
@@ -748,6 +748,15 @@ Examples:
 
     # Determine output path
     output_path = get_output_path(local_views_dir, args.uuid, provider, args.format)
+
+    # Report the local view path, not the source JSONL/JSON: the source is an
+    # implementation detail and showing it invites the user to "refresh" by
+    # deleting the cache. If no local view exists yet, the "Created:" line below
+    # will report its path.
+    if output_path.exists():
+        print(muted(f"Found: {output_path}"))
+    else:
+        print(muted("Found conversation — rendering a fresh local view..."))
 
     # HTML pages link a shared stylesheet — (re)deploy it so restyling the
     # source propagates even to cached pages that aren't regenerated.
@@ -758,7 +767,7 @@ Examples:
     try:
         content = render_conversation(provider, conv_file, args.format, item_type)
     except Exception as e:
-        print(f"Error converting conversation: {e}", file=sys.stderr)
+        print(error(f"Error converting conversation: {e}"), file=sys.stderr)
         sys.exit(1)
 
     # Decide whether to (re)write the cached file.
@@ -770,30 +779,34 @@ Examples:
             # reuse the cached page.
             existing = output_path.read_text(encoding="utf-8")
             if existing == content:
-                print("HTML is up to date — opening existing file.")
+                print(muted("HTML is up to date — opening existing file."))
                 write_file = False
             else:
-                print("Conversation has changed — refreshed the HTML.")
+                print(muted("Conversation has changed — refreshed the HTML."))
         else:
             existing = output_path.read_text(encoding="utf-8")
             status = classify_refresh(existing, content)
             if status == "current":
-                print("Markdown is up to date — opening existing file.")
+                print(muted("Markdown is up to date — opening existing file."))
                 write_file = False
             elif status == "stale":
-                print("Conversation has new messages — refreshed the markdown.")
+                print(muted("Conversation has new messages — refreshed the markdown."))
             else:  # diverged
-                print("Note: this conversation has newer messages, but the markdown "
-                      "file has local edits — opening your edited file unchanged.")
+                # Surrounding blank lines + warning colour so this is hard to
+                # miss: the on-disk file won't be overwritten with newer content.
+                print()
+                print(warning("Note: this conversation has newer messages, but the markdown "
+                              "file has local edits — opening your edited file unchanged."))
+                print()
                 write_file = False
 
     if write_file:
         try:
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            print(f"Created: {output_path}")
+            print(muted(f"Created: {output_path}"))
         except Exception as e:
-            print(f"Error writing {args.format} file: {e}", file=sys.stderr)
+            print(error(f"Error writing {args.format} file: {e}"), file=sys.stderr)
             sys.exit(1)
 
     # Open file
@@ -802,7 +815,7 @@ Examples:
             open_in_editor(output_path)
         else:  # html
             # Open HTML in browser
-            print(f"Opening in browser...")
+            print(muted("Opening in browser..."))
             try:
                 # Try xdg-open (Linux), open (macOS), or start (Windows)
                 if sys.platform.startswith('linux'):
@@ -812,11 +825,11 @@ Examples:
                 elif sys.platform == 'win32':
                     subprocess.run(["start", str(output_path)], shell=True)
                 else:
-                    print(f"Cannot automatically open browser on this platform.", file=sys.stderr)
-                    print(f"File saved at: {output_path}")
+                    print(warning("Cannot automatically open browser on this platform."), file=sys.stderr)
+                    print(muted(f"File saved at: {output_path}"))
             except Exception as e:
-                print(f"Error opening browser: {e}", file=sys.stderr)
-                print(f"File saved at: {output_path}")
+                print(error(f"Error opening browser: {e}"), file=sys.stderr)
+                print(muted(f"File saved at: {output_path}"))
 
 
 if __name__ == "__main__":

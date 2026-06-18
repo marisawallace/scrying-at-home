@@ -12,7 +12,9 @@ the ``BRIGHT_*`` names aliased — keeping their on-screen colour identical.
 """
 from __future__ import annotations
 
+import os
 import re
+import sys
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -44,6 +46,57 @@ _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 def strip_ansi(s: str) -> str:
     """Remove ANSI SGR escape sequences from a string."""
     return _ANSI_RE.sub("", s)
+
+
+def color_enabled(stream=None) -> bool:
+    """Whether to emit colour: honour ``NO_COLOR`` and require a real TTY.
+
+    Defaults to stdout. Pass ``sys.stderr`` when styling text bound for it.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    stream = stream if stream is not None else sys.stdout
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def paint(text: str, *codes: str, stream=None) -> str:
+    """Wrap ``text`` in the given SGR ``codes`` (then RESET), TTY permitting.
+
+    The building block for the semantic helpers below; reuse it for ad-hoc
+    styling elsewhere so the ``NO_COLOR``/TTY guard stays in one place.
+    """
+    if not codes or not color_enabled(stream):
+        return text
+    return "".join(codes) + text + RESET
+
+
+# --- Semantic styles -------------------------------------------------------
+# Prefer these over raw codes at call sites so the program's palette stays
+# consistent and tweakable from one place.
+
+def muted(text: str, *, stream=None) -> str:
+    """De-emphasised status/detail lines (dim grey)."""
+    return paint(text, DIM, stream=stream)
+
+
+def warning(text: str, *, stream=None) -> str:
+    """Attention-worthy notices the user should not miss (orange)."""
+    return paint(text, ORANGE, stream=stream)
+
+
+def success(text: str, *, stream=None) -> str:
+    """Positive outcomes (green)."""
+    return paint(text, GREEN, stream=stream)
+
+
+def error(text: str, *, stream=None) -> str:
+    """Failures (bright red)."""
+    return paint(text, BRIGHT_RED, stream=stream)
+
+
+def emphasis(text: str, *, stream=None) -> str:
+    """Foreground detail worth highlighting (bold)."""
+    return paint(text, BOLD, stream=stream)
 
 
 class Colors:

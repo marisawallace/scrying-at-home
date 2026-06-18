@@ -39,6 +39,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scrying_at_home.common.ansi import muted, warning, error
+
 # The repository root, derived from this module's location
 # (scrying_at_home/config/paths.py -> parents[2]). This is the stable anchor the
 # root entry-point shims and the moved CLIs use for the default .env, the assets/
@@ -508,29 +510,29 @@ def open_in_editor(*paths: Path) -> None:
 
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
     if editor:
-        print(f"Opening {len(targets)} file(s) in {editor}...")
+        print(muted(f"Opening {len(targets)} file(s) in {editor}..."))
         try:
             subprocess.run([editor, *targets])
             return
         except FileNotFoundError:
             print(
-                f"$EDITOR '{editor}' not found; trying the system default app...",
+                warning(f"$EDITOR '{editor}' not found; trying the system default app..."),
                 file=sys.stderr,
             )
 
     command = _default_open_command(paths[0])
     if command and shutil.which(command[0]):
-        print(f"Opening {len(targets)} file(s) with the default app...")
+        print(muted(f"Opening {len(targets)} file(s) with the default app..."))
         try:
             for target in targets:
                 subprocess.run([*command[:-1], target])
             return
         except OSError as e:
-            print(f"Could not open the default app: {e}", file=sys.stderr)
+            print(error(f"Could not open the default app: {e}"), file=sys.stderr)
 
     saved = "\n".join(f"  {t}" for t in targets)
     print(
-        "No editor available. Set $EDITOR to your preferred editor.\n"
+        warning("No editor available. Set $EDITOR to your preferred editor.") + "\n"
         f"File(s) saved at:\n{saved}",
         file=sys.stderr,
     )
