@@ -1204,6 +1204,12 @@ Examples:
     )
 
     parser.add_argument(
+        "--refresh", "-r",
+        action="store_true",
+        help="Mirror this machine's live Claude Code/Codex transcripts into the archive before searching, so a session you were just active in is current (the hooks otherwise lag the most recent reply by one turn). Local host only; adds a brief sync delay."
+    )
+
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Run the query through both the index and a full scan and diff the results; prints VERIFY OK or a field-level diff and exits (proves the index is a pure accelerator)"
@@ -1269,6 +1275,15 @@ def main():
     config = load_env_or_exit(script_dir, args.config)
 
     data_dir = resolve_data_dir(script_dir, config)
+
+    # --refresh: opt-in sweep of this machine's live transcripts into the
+    # archive before the index reconcile below picks the new bytes up. Closes
+    # the one-turn lag for a just-active local session; off by default to keep
+    # the common search path free of disk-sync latency.
+    if args.refresh:
+        from scrying_at_home.sync.refresh import refresh_local_sources
+        from scrying_at_home.config.paths import resolve_env_path
+        refresh_local_sources(config, resolve_env_path(script_dir, args.config))
 
     # Search index: brought up to date on every run (files can arrive via
     # cloud sync with no local process running), then used to narrow query

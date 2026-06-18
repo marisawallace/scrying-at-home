@@ -693,6 +693,12 @@ Examples:
         help="Don't open the file, just generate it"
     )
 
+    parser.add_argument(
+        "--refresh", "-r",
+        action="store_true",
+        help="Mirror this machine's live Claude Code/Codex transcripts into the archive before rendering, so a session you were just active in is current (the hooks otherwise lag the most recent reply by one turn). Local host only; adds a brief sync delay."
+    )
+
     add_config_arg(parser)
 
     args = parser.parse_args()
@@ -704,6 +710,15 @@ Examples:
     # Load configuration from .env (shared parser handles inline comments and
     # quoted values, unlike the previous inline split).
     config = load_env_or_exit(script_dir, args.config)
+
+    # --refresh: opt-in sweep of this machine's live transcripts into the
+    # archive before we locate and render the conversation below, so a session
+    # you were just active in shows its latest turn. Off by default to keep the
+    # common view path free of disk-sync latency.
+    if args.refresh:
+        from scrying_at_home.sync.refresh import refresh_local_sources
+        from scrying_at_home.config.paths import resolve_env_path
+        refresh_local_sources(config, resolve_env_path(script_dir, args.config))
 
     data_dir = resolve_data_dir(script_dir, config)
     local_views_dir = resolve_local_views_dir(script_dir, config)
