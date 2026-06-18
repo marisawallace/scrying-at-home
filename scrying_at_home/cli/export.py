@@ -42,6 +42,7 @@ from scrying_at_home.search.engine import SearchResult
 from scrying_at_home.search.sources import SOURCE_CHOICES, SOURCE_REGISTRY
 from scrying_at_home.sync.local_chats import build_filename
 from scrying_at_home.view.render import render_conversation
+from scrying_at_home.common.ansi import muted, warning, success
 
 # Friendly per-provider labels for the index headings, derived from the
 # provider registry (shared with analytics.PROVIDER_LABELS). build_index keeps
@@ -147,12 +148,12 @@ def run_export(output_dir: Path, results: Sequence[SearchResult], fmt: str, dry_
     planned = plan_exports(results, extension=extension)
 
     if dry_run:
-        print(f"Would export {len(planned)} item(s) to {output_dir}/")
+        print(muted(f"Would export {len(planned)} item(s) to {output_dir}/"))
         by_provider: dict[str, int] = {}
         for r, _ in planned:
             by_provider[r.provider] = by_provider.get(r.provider, 0) + 1
         for provider, count in sorted(by_provider.items()):
-            print(f"  {PROVIDER_LABELS.get(provider, provider):<14} {count}")
+            print(muted(f"  {PROVIDER_LABELS.get(provider, provider):<14} {count}"))
         return 0
 
     written: List[Tuple[SearchResult, Path]] = []
@@ -162,7 +163,7 @@ def run_export(output_dir: Path, results: Sequence[SearchResult], fmt: str, dry_
         try:
             content = render_conversation(r.provider, r.filepath, fmt, r.type)
         except Exception as e:  # one bad file shouldn't abort the whole export
-            print(f"Warning: could not render {r.filepath}: {e}", file=sys.stderr)
+            print(warning(f"Warning: could not render {r.filepath}: {e}", stream=sys.stderr), file=sys.stderr)
             failed += 1
             continue
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,10 +174,10 @@ def run_export(output_dir: Path, results: Sequence[SearchResult], fmt: str, dry_
     # dead links.
     (output_dir / "index.md").write_text(build_index(written), encoding="utf-8")
 
-    print(f"Exported {len(written)} item(s) to {output_dir}/")
+    print(success(f"Exported {len(written)} item(s) to {output_dir}/"))
     if failed:
-        print(f"  ({failed} could not be rendered — see warnings above)")
-    print(f"Index: {output_dir / 'index.md'}")
+        print(warning(f"  ({failed} could not be rendered — see warnings above)"))
+    print(muted(f"Index: {output_dir / 'index.md'}"))
     return len(written)
 
 
@@ -216,7 +217,7 @@ Examples:
 
     results = gather_results(config, args.source)
     if not results:
-        print("No conversations found to export.")
+        print(muted("No conversations found to export."))
         return
 
     run_export(Path(args.output_dir).expanduser(), results, args.format, args.dry_run)

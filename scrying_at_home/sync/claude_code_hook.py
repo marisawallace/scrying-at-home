@@ -46,6 +46,7 @@ from scrying_at_home.config.paths import (
     resolve_provider_archive_dir,
 )
 from scrying_at_home.sync import mirror_engine
+from scrying_at_home.common.ansi import warning, error
 
 CLAUDE_DIR = Path.home() / ".claude"
 CLAUDE_PROJECTS_DIR = CLAUDE_DIR / "projects"
@@ -111,19 +112,19 @@ def main():
     try:
         archive_dir = resolve_archive_dir()
     except RuntimeError as e:
-        print(f"Error: {e}", file=sys.stderr, flush=True)
+        print(error(f"Error: {e}", stream=sys.stderr), file=sys.stderr, flush=True)
         sys.exit(1)
 
     if event == "SessionEnd":
         scan_root = CLAUDE_PROJECTS_DIR
     else:
         if not transcript_path.exists():
-            print(f"Warning: transcript not found: {transcript_path}", file=sys.stderr, flush=True)
+            print(warning(f"Warning: transcript not found: {transcript_path}", stream=sys.stderr), file=sys.stderr, flush=True)
             return
         try:
             validate_source_path(transcript_path)
         except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr, flush=True)
+            print(error(f"Error: {e}", stream=sys.stderr), file=sys.stderr, flush=True)
             sys.exit(1)
         scan_root = transcript_path.parent
 

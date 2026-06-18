@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from scrying_at_home.common.ansi import muted, warning, error
+
 
 def validate_source_path(transcript_path: Path, root: Path) -> None:
     """Ensure `transcript_path` is under `root` to prevent path traversal.
@@ -104,7 +106,7 @@ def sync_transcript(transcript_path: Path, archive_path: Path,
                         json.loads(line)
                     except json.JSONDecodeError:
                         print(
-                            f"Warning: skipping corrupt JSONL at line {i+1}: {line[:80]!r}",
+                            warning(f"Warning: skipping corrupt JSONL at line {i+1}: {line[:80]!r}", stream=sys.stderr),
                             file=sys.stderr,
                         )
                         continue
@@ -148,7 +150,7 @@ def sync_directory(scan_root: Path, archive_dir: Path, event: str, *,
             validate_source_path(jsonl, validate_root)
             archive_path = get_archive_path(jsonl, archive_dir, anchor=anchor)
         except ValueError as e:
-            print(f"Skipping {jsonl}: {e}", file=sys.stderr)
+            print(warning(f"Skipping {jsonl}: {e}", stream=sys.stderr), file=sys.stderr)
             continue
         new_lines = sync_transcript(jsonl, archive_path, log_anomaly)
         if new_lines > 0:
@@ -156,7 +158,7 @@ def sync_directory(scan_root: Path, archive_dir: Path, event: str, *,
             total_lines += new_lines
     if total_lines > 0:
         print(
-            f"[{event}] Archived {total_lines} new lines across {total_files} file(s) under {scan_root}",
+            muted(f"[{event}] Archived {total_lines} new lines across {total_files} file(s) under {scan_root}", stream=sys.stderr),
             file=sys.stderr,
         )
 
@@ -169,9 +171,9 @@ def log_anomaly(message: str, log_path: Path) -> None:
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     entry = f"[{timestamp}] {message}\n"
-    print(f"ANOMALY: {message}", file=sys.stderr)
+    print(warning(f"ANOMALY: {message}", stream=sys.stderr), file=sys.stderr)
     try:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry)
     except OSError as e:
-        print(f"  (could not write {log_path}: {e})", file=sys.stderr)
+        print(error(f"  (could not write {log_path}: {e})", stream=sys.stderr), file=sys.stderr)

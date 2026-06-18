@@ -22,6 +22,44 @@ from typing import Dict, List, Set, Tuple
 
 from scrying_at_home.config.paths import REPO_ROOT, add_config_arg, load_env_or_exit, resolve_data_dir, resolve_archived_exports_dir
 from scrying_at_home.common.timestamps import to_utc_iso
+from scrying_at_home.common.ansi import muted, warning, success, error
+
+
+# ============================================================================
+# Coloured terminal output
+# ============================================================================
+# Thin wrappers over the shared palette (scrying_at_home.common.ansi) so the
+# many call sites below stay readable. ``emit_error``/``emit_warn`` also route
+# to stderr — this module historically printed everything (errors included) to
+# stdout, which was an oversight, not a deliberate choice.
+
+def emit_error(msg: str) -> None:
+    """Failure line → red, stderr (the nonzero exit code carries the signal)."""
+    print(error(msg, stream=sys.stderr), file=sys.stderr)
+
+
+def emit_warn(msg: str) -> None:
+    """Non-fatal notice → orange, stderr."""
+    print(warning(msg, stream=sys.stderr), file=sys.stderr)
+
+
+def emit_info(msg: str) -> None:
+    """De-emphasised status/progress line → dim, stdout."""
+    print(muted(msg))
+
+
+def emit_detail(msg: str) -> None:
+    """Dim continuation line that accompanies an error/warning → stderr.
+
+    Keeps a multi-line error block on one stream without painting every line
+    red — only the leading ``emit_error`` line carries the alarm colour.
+    """
+    print(muted(msg, stream=sys.stderr), file=sys.stderr)
+
+
+def emit_success(msg: str) -> None:
+    """Completion line → green, stdout."""
+    print(success(msg))
 
 
 # ============================================================================
@@ -63,7 +101,7 @@ def format_date(date_str: str) -> str:
         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
         return dt.strftime("%Y-%m-%d")
     except Exception as e:
-        print(f"Warning: Could not parse date '{date_str}': {e}")
+        emit_warn(f"Warning: Could not parse date '{date_str}': {e}")
         return "unknown-date"
 
 
@@ -129,63 +167,63 @@ def validate_claude_export_format(users_data: List, conversations_data: List, pr
     """
     # Check users.json structure
     if not users_data or not isinstance(users_data, list):
-        print("ERROR: Invalid export format - users.json should contain a list of users")
-        print("This export file may be corrupted or from an incompatible Claude version.")
+        emit_error("ERROR: Invalid export format - users.json should contain a list of users")
+        emit_detail("This export file may be corrupted or from an incompatible Claude version.")
         sys.exit(1)
 
     user = users_data[0]
     if not isinstance(user, dict):
-        print("ERROR: Invalid export format - user data should be a dictionary")
+        emit_error("ERROR: Invalid export format - user data should be a dictionary")
         sys.exit(1)
 
     required_user_fields = ["email_address", "uuid"]
     missing_user_fields = [f for f in required_user_fields if f not in user]
     if missing_user_fields:
-        print(f"ERROR: Invalid export format - user data missing required fields: {', '.join(missing_user_fields)}")
-        print("Expected fields: email_address, uuid")
-        print("This export may be from an incompatible Claude version.")
+        emit_error(f"ERROR: Invalid export format - user data missing required fields: {', '.join(missing_user_fields)}")
+        emit_detail("Expected fields: email_address, uuid")
+        emit_detail("This export may be from an incompatible Claude version.")
         sys.exit(1)
 
     # Check conversations.json structure
     if not isinstance(conversations_data, list):
-        print("ERROR: Invalid export format - conversations.json should contain a list")
+        emit_error("ERROR: Invalid export format - conversations.json should contain a list")
         sys.exit(1)
 
     if len(conversations_data) > 0:
         # Check first conversation has expected structure
         conv = conversations_data[0]
         if not isinstance(conv, dict):
-            print("ERROR: Invalid export format - conversation should be a dictionary")
+            emit_error("ERROR: Invalid export format - conversation should be a dictionary")
             sys.exit(1)
 
         required_conv_fields = ["uuid", "name", "created_at", "account", "chat_messages"]
         missing_conv_fields = [f for f in required_conv_fields if f not in conv]
         if missing_conv_fields:
-            print(f"ERROR: Invalid export format - conversation missing required fields: {', '.join(missing_conv_fields)}")
-            print("Expected fields: uuid, name, created_at, account, chat_messages")
-            print("This export may be from an incompatible Claude version.")
-            print("\nIf Claude.ai has changed their export format, please report this issue.")
+            emit_error(f"ERROR: Invalid export format - conversation missing required fields: {', '.join(missing_conv_fields)}")
+            emit_detail("Expected fields: uuid, name, created_at, account, chat_messages")
+            emit_detail("This export may be from an incompatible Claude version.")
+            emit_detail("\nIf Claude.ai has changed their export format, please report this issue.")
             sys.exit(1)
 
     # Check projects.json structure
     if not isinstance(projects_data, list):
-        print("ERROR: Invalid export format - projects.json should contain a list")
+        emit_error("ERROR: Invalid export format - projects.json should contain a list")
         sys.exit(1)
 
     if len(projects_data) > 0:
         # Check first project has expected structure
         proj = projects_data[0]
         if not isinstance(proj, dict):
-            print("ERROR: Invalid export format - project should be a dictionary")
+            emit_error("ERROR: Invalid export format - project should be a dictionary")
             sys.exit(1)
 
         required_proj_fields = ["uuid", "name", "created_at", "creator"]
         missing_proj_fields = [f for f in required_proj_fields if f not in proj]
         if missing_proj_fields:
-            print(f"ERROR: Invalid export format - project missing required fields: {', '.join(missing_proj_fields)}")
-            print("Expected fields: uuid, name, created_at, creator, docs")
-            print("This export may be from an incompatible Claude version.")
-            print("\nIf Claude.ai has changed their export format, please report this issue.")
+            emit_error(f"ERROR: Invalid export format - project missing required fields: {', '.join(missing_proj_fields)}")
+            emit_detail("Expected fields: uuid, name, created_at, creator, docs")
+            emit_detail("This export may be from an incompatible Claude version.")
+            emit_detail("\nIf Claude.ai has changed their export format, please report this issue.")
             sys.exit(1)
 
 
@@ -197,25 +235,25 @@ def validate_chatgpt_export_format(conversations_data: List) -> None:
     """
     # Check conversations.json structure
     if not isinstance(conversations_data, list):
-        print("ERROR: Invalid export format - conversations.json should contain a list")
-        print("This export file may be corrupted or from an incompatible ChatGPT version.")
+        emit_error("ERROR: Invalid export format - conversations.json should contain a list")
+        emit_detail("This export file may be corrupted or from an incompatible ChatGPT version.")
         sys.exit(1)
 
     if len(conversations_data) > 0:
         # Check first conversation has expected structure
         conv = conversations_data[0]
         if not isinstance(conv, dict):
-            print("ERROR: Invalid export format - conversation should be a dictionary")
+            emit_error("ERROR: Invalid export format - conversation should be a dictionary")
             sys.exit(1)
 
         # Check for required fields
         required_fields = ["id", "title", "create_time"]
         missing_fields = [f for f in required_fields if f not in conv]
         if missing_fields:
-            print(f"ERROR: Invalid export format - conversation missing required fields: {', '.join(missing_fields)}")
-            print("Expected fields: id, title, create_time")
-            print("This export may be from an incompatible ChatGPT version.")
-            print("\nIf ChatGPT has changed their export format, please report this issue.")
+            emit_error(f"ERROR: Invalid export format - conversation missing required fields: {', '.join(missing_fields)}")
+            emit_detail("Expected fields: id, title, create_time")
+            emit_detail("This export may be from an incompatible ChatGPT version.")
+            emit_detail("\nIf ChatGPT has changed their export format, please report this issue.")
             sys.exit(1)
 
 
@@ -401,10 +439,10 @@ class ClaudeProvider(Provider):
                     "projects": self._read_projects(zf)
                 }
             except KeyError as e:
-                print(f"ERROR: Missing expected file in zip: {e}")
+                emit_error(f"ERROR: Missing expected file in zip: {e}")
                 sys.exit(1)
             except json.JSONDecodeError as e:
-                print(f"ERROR: Invalid JSON in zip file: {e}")
+                emit_error(f"ERROR: Invalid JSON in zip file: {e}")
                 sys.exit(1)
 
     def validate_export_format(self, export_data: Dict) -> None:
@@ -420,14 +458,14 @@ class ClaudeProvider(Provider):
         users_data = export_data["users"]
 
         if not users_data or len(users_data) == 0:
-            print("ERROR: No user found in users.json")
+            emit_error("ERROR: No user found in users.json")
             sys.exit(1)
 
         user = users_data[0]
         email = user.get("email_address")
 
         if not email:
-            print("ERROR: No email_address found in user data")
+            emit_error("ERROR: No email_address found in user data")
             sys.exit(1)
 
         return email
@@ -437,14 +475,14 @@ class ClaudeProvider(Provider):
         users_data = export_data["users"]
 
         if not users_data or len(users_data) == 0:
-            print("ERROR: No user found in users.json")
+            emit_error("ERROR: No user found in users.json")
             sys.exit(1)
 
         user = users_data[0]
         user_uuid = user.get("uuid")
 
         if not user_uuid:
-            print("ERROR: No uuid found in user data")
+            emit_error("ERROR: No uuid found in user data")
             sys.exit(1)
 
         return user_uuid
@@ -455,7 +493,7 @@ class ClaudeProvider(Provider):
         user_json_path = user_dir / "user.json"
         with open(user_json_path, "w", encoding="utf-8") as f:
             json.dump(user, f, indent=2, ensure_ascii=False)
-        print(f"Saved user data to: {user_json_path}")
+        emit_info(f"Saved user data to: {user_json_path}")
 
     def get_conversations(self, export_data: Dict) -> List[Dict]:
         """Extract conversations from export data."""
@@ -477,13 +515,13 @@ class ClaudeProvider(Provider):
 
         # Only delete if BOTH the conversation UUID matches AND it belongs to the same user
         if existing_uuid in new_uuids and existing_account_uuid == user_uuid:
-            print(f"  Removing old version: UUID {existing_uuid}")
+            emit_info(f"  Removing old version: UUID {existing_uuid}")
             return True
         elif existing_uuid in new_uuids and existing_account_uuid != user_uuid:
             # This should never happen, but log it as a warning
-            print(f"  WARNING: Found conversation with UUID {existing_uuid} but different account UUID!")
-            print(f"           Expected account: {user_uuid}, Found: {existing_account_uuid}")
-            print(f"           Skipping deletion for safety.")
+            emit_warn(f"  WARNING: Found conversation with UUID {existing_uuid} but different account UUID!")
+            emit_detail(f"           Expected account: {user_uuid}, Found: {existing_account_uuid}")
+            emit_detail(f"           Skipping deletion for safety.")
             return False
 
         return False
@@ -500,13 +538,13 @@ class ClaudeProvider(Provider):
 
         # Only delete if BOTH the project UUID matches AND it belongs to the same user
         if existing_uuid in new_uuids and existing_creator_uuid == user_uuid:
-            print(f"  Removing old version: UUID {existing_uuid}")
+            emit_info(f"  Removing old version: UUID {existing_uuid}")
             return True
         elif existing_uuid in new_uuids and existing_creator_uuid != user_uuid:
             # This should never happen, but log it as a warning
-            print(f"  WARNING: Found project with UUID {existing_uuid} but different creator UUID!")
-            print(f"           Expected creator: {user_uuid}, Found: {existing_creator_uuid}")
-            print(f"           Skipping deletion for safety.")
+            emit_warn(f"  WARNING: Found project with UUID {existing_uuid} but different creator UUID!")
+            emit_detail(f"           Expected creator: {user_uuid}, Found: {existing_creator_uuid}")
+            emit_detail(f"           Skipping deletion for safety.")
             return False
 
         return False
@@ -534,7 +572,7 @@ class ChatGPTProvider(Provider):
         # can still reach here — guard with .get() to give a clear error rather
         # than a raw KeyError.
         if not conv.get("id"):
-            print("ERROR: missing ID in ChatGPT conversation")
+            emit_error("ERROR: missing ID in ChatGPT conversation")
             sys.exit(1)
 
         # Map new field names to internal names. title is often null/empty for
@@ -547,7 +585,7 @@ class ChatGPTProvider(Provider):
         # datetime.fromtimestamp(None) raising an opaque TypeError).
         timestamp = conv.get("create_time") or conv.get("update_time")
         if timestamp is None:
-            print(f"ERROR: ChatGPT conversation {conv['id']} has no usable timestamp")
+            emit_error(f"ERROR: ChatGPT conversation {conv['id']} has no usable timestamp")
             sys.exit(1)
         # UTC, not local: datetime.fromtimestamp(timestamp) would yield local
         # wall-clock and the trailing 'Z' would then mislabel it UTC — storing a
@@ -573,10 +611,10 @@ class ChatGPTProvider(Provider):
                     "user": json.loads(zf.read("user.json"))
                 }
             except KeyError as e:
-                print(f"ERROR: Missing expected file in zip: {e}")
+                emit_error(f"ERROR: Missing expected file in zip: {e}")
                 sys.exit(1)
             except json.JSONDecodeError as e:
-                print(f"ERROR: Invalid JSON in zip file: {e}")
+                emit_error(f"ERROR: Invalid JSON in zip file: {e}")
                 sys.exit(1)
 
     def validate_export_format(self, export_data: Dict) -> None:
@@ -587,12 +625,12 @@ class ChatGPTProvider(Provider):
         """Get user email from user.json."""
         user_data = export_data.get("user")
         if not user_data:
-            print("ERROR: No user data found in export")
+            emit_error("ERROR: No user data found in export")
             sys.exit(1)
 
         email = user_data.get("email")
         if not email:
-            print("ERROR: No email found in user data")
+            emit_error("ERROR: No email found in user data")
             sys.exit(1)
 
         return email
@@ -601,12 +639,12 @@ class ChatGPTProvider(Provider):
         """Get user UUID from user.json."""
         user_data = export_data.get("user")
         if not user_data:
-            print("ERROR: No user data found in export")
+            emit_error("ERROR: No user data found in export")
             sys.exit(1)
 
         user_id = user_data.get("id")
         if not user_id:
-            print("ERROR: No id found in user data")
+            emit_error("ERROR: No id found in user data")
             sys.exit(1)
 
         return user_id
@@ -618,7 +656,7 @@ class ChatGPTProvider(Provider):
 
         with open(user_json_path, "w", encoding="utf-8") as f:
             json.dump(user_data, f, indent=2, ensure_ascii=False)
-        print(f"Saved user data to: {user_json_path}")
+        emit_info(f"Saved user data to: {user_json_path}")
 
     def get_conversations(self, export_data: Dict) -> List[Dict]:
         """Extract and normalize conversations from export data."""
@@ -640,7 +678,7 @@ class ChatGPTProvider(Provider):
 
         # Only delete if the conversation UUID matches
         if existing_uuid in new_uuids:
-            print(f"  Removing old version: UUID {existing_uuid}")
+            emit_info(f"  Removing old version: UUID {existing_uuid}")
             return True
 
         return False
@@ -673,7 +711,7 @@ def process_items(items: List[Dict], items_dir: Path, item_type: str,
     if not items:
         return
 
-    print(f"\nProcessing {len(items)} {item_type}s...")
+    emit_info(f"\nProcessing {len(items)} {item_type}s...")
 
     # Build unique filenames for all items
     uuid_to_filename = build_unique_filenames(items)
@@ -691,7 +729,7 @@ def process_items(items: List[Dict], items_dir: Path, item_type: str,
                 if should_delete_fn(existing_data, new_uuids, user_uuid):
                     existing_file.unlink()
         except Exception as e:
-            print(f"  Warning: Could not check {existing_file.name}: {e}")
+            emit_warn(f"  Warning: Could not check {existing_file.name}: {e}")
 
     # Write new item files
     for item in items:
@@ -702,7 +740,7 @@ def process_items(items: List[Dict], items_dir: Path, item_type: str,
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(item, f, indent=2, ensure_ascii=False)
 
-        print(f"  Saved: {filename}.json (UUID: {uuid})")
+        emit_info(f"  Saved: {filename}.json (UUID: {uuid})")
 
 
 def extract_and_organize(provider: Provider, zip_path: Path) -> str:
@@ -711,7 +749,7 @@ def extract_and_organize(provider: Provider, zip_path: Path) -> str:
     This function contains the common imperative orchestration logic.
     Returns the user email extracted from the export.
     """
-    print(f"Processing: {zip_path}")
+    emit_info(f"Processing: {zip_path}")
 
     # Provider extracts data
     export_data = provider.extract_export_data(zip_path)
@@ -723,8 +761,8 @@ def extract_and_organize(provider: Provider, zip_path: Path) -> str:
     email = provider.get_user_email(export_data)
     user_uuid = provider.get_user_uuid(export_data)
 
-    print(f"User email: {email}")
-    print(f"User UUID: {user_uuid}")
+    emit_info(f"User email: {email}")
+    emit_info(f"User UUID: {user_uuid}")
 
     # Create user directory under data/{provider}/
     user_dir = provider.get_user_dir(email)
@@ -761,7 +799,7 @@ def extract_and_organize(provider: Provider, zip_path: Path) -> str:
             should_delete_fn=provider.should_delete_existing_project
         )
 
-    print(f"\n✓ Successfully processed {zip_path.name}")
+    emit_success(f"\n✓ Successfully processed {zip_path.name}")
 
     return email
 
@@ -816,11 +854,11 @@ Export your data:
 
     # Exactly one provider must be specified
     if not (args.claude or args.chatgpt):
-        print("ERROR: Must specify either --claude or --chatgpt")
+        emit_error("ERROR: Must specify either --claude or --chatgpt")
         parser.print_help()
         sys.exit(1)
     if args.claude and args.chatgpt:
-        print("ERROR: Cannot specify both --claude and --chatgpt")
+        emit_error("ERROR: Cannot specify both --claude and --chatgpt")
         sys.exit(1)
 
     # Get script directory
@@ -838,8 +876,8 @@ Export your data:
 
     # Determine where to search for zip files (ZIP_SEARCH_DIR is required)
     if not config.get("ZIP_SEARCH_DIR"):
-        print(
-            "ERROR: ZIP_SEARCH_DIR is not set.\n"
+        emit_error("ERROR: ZIP_SEARCH_DIR is not set.")
+        emit_detail(
             "Set it in your .env to the directory containing your export zip "
             "files (typically your browser's downloads folder), e.g.:\n"
             "  ZIP_SEARCH_DIR=~/Downloads"
@@ -854,15 +892,15 @@ Export your data:
 
     if not zip_files:
         provider_name = provider.get_provider_name()
-        print(f"No {provider_name} export zip files found")
-        print(f"Searched in: {search_dir}")
+        emit_info(f"No {provider_name} export zip files found")
+        emit_info(f"Searched in: {search_dir}")
         if provider_name == "claude":
-            print("Expected pattern: data-*.zip")
+            emit_info("Expected pattern: data-*.zip")
         elif provider_name == "chatgpt":
-            print("Expected pattern: [64-char-hex]-YYYY-MM-DD-HH-MM-SS-[hex].zip")
+            emit_info("Expected pattern: [64-char-hex]-YYYY-MM-DD-HH-MM-SS-[hex].zip")
         sys.exit(0)
 
-    print(f"Found {len(zip_files)} zip file(s) to process\n")
+    emit_info(f"Found {len(zip_files)} zip file(s) to process\n")
 
     # Process each zip file
     for zip_path in sorted(zip_files):
@@ -874,15 +912,15 @@ Export your data:
             archived_exports_dir.mkdir(parents=True, exist_ok=True)
             archive_dest = archived_exports_dir / zip_path.name
             zip_path.rename(archive_dest)
-            print(f"Moved {zip_path.name} to {archived_exports_dir}/")
+            emit_info(f"Moved {zip_path.name} to {archived_exports_dir}/")
             print()
         except Exception as e:
-            print(f"\nERROR processing {zip_path.name}: {e}")
+            emit_error(f"\nERROR processing {zip_path.name}: {e}")
             import traceback
             traceback.print_exc()
             sys.exit(1)
 
-    print(f"All done! Data location: {provider.get_user_dir(email)}")
+    emit_success(f"All done! Data location: {provider.get_user_dir(email)}")
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ from scrying_at_home.search.engine import (
     search_codex_with_index,
     search_llm_with_index,
 )
+from scrying_at_home.common.ansi import error
 
 
 @dataclass(frozen=True)
@@ -145,5 +146,5 @@ def sources_or_error(descriptor: SourceDescriptor, selected: str, sources) -> bo
     if sources:
         return True
     if selected == descriptor.token and descriptor.env_key:
-        print(f"Error: {descriptor.env_key} not configured in .env", file=sys.stderr)
+        print(error(f"Error: {descriptor.env_key} not configured in .env", stream=sys.stderr), file=sys.stderr)
     return False

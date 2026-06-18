@@ -40,6 +40,7 @@ from typing import Callable, Optional, Protocol
 
 from scrying_at_home.parsers import claude_code as ccp
 from scrying_at_home.parsers import codex as cxp
+from scrying_at_home.common.ansi import muted, warning
 from scrying_at_home.parsers.transcript_jsonl import parse_jsonl_lines
 
 from scrying_at_home.common.timestamps import derive_updated_at
@@ -536,7 +537,7 @@ def _open_index_locked(db_path: Path) -> Optional[sqlite3.Connection]:
                 _delete_db_files(db_path)
             else:
                 print(
-                    f"Warning: search index unavailable ({e}); using full scan.",
+                    warning(f"Warning: search index unavailable ({e}); using full scan.", stream=sys.stderr),
                     file=sys.stderr,
                 )
                 return None
@@ -781,7 +782,7 @@ def _index_llm_file(conn: sqlite3.Connection, fs: FileStat,
         meta = make_llm_item_meta(data, fs.item_type, texts)
         meta["model"] = extract_llm_model(data, fs.item_type, fs.provider)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-        print(f"Warning: could not index {fs.path}: {e}", file=sys.stderr)
+        print(warning(f"Warning: could not index {fs.path}: {e}", stream=sys.stderr), file=sys.stderr)
         return fs.path
     file_id = _insert_file_row(conn, fs, len(raw))
     _insert_fts_segment(conn, file_id, searchable_body(texts))
@@ -804,7 +805,7 @@ def _index_transcript_file(conn: sqlite3.Connection, fs: FileStat,
         # Invalid UTF-8 is treated like an unreadable file: no index rows, the
         # path is returned as failed (loud banner every run), exactly as the
         # scan path's strict-UTF-8 open skips-and-warns the whole file.
-        print(f"Warning: could not index {fs.path}: {e}", file=sys.stderr)
+        print(warning(f"Warning: could not index {fs.path}: {e}", stream=sys.stderr), file=sys.stderr)
         return fs.path
     lines = parse_jsonl_texts(raw_lines, fs.path)
     file_id = _insert_file_row(conn, fs, end_offset)
@@ -851,7 +852,7 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
     show_progress = total >= PROGRESS_MIN_FILES
     animate = show_progress and sys.stderr.isatty()
     if show_progress and not animate:
-        print(f"Indexing {total} archive file(s)...", file=sys.stderr)
+        print(muted(f"Indexing {total} archive file(s)...", stream=sys.stderr), file=sys.stderr)
 
     def ops():
         for ix in plan.removed:
@@ -875,7 +876,7 @@ def reconcile(conn: sqlite3.Connection, plan: ReconcilePlan,
             failed.append(_index_file(conn, fs, extract_llm_texts, extract_llm_model))
         done += 1
         if animate:
-            print(f"\rIndexing {render_progress_bar(done, total)}",
+            print("\r" + muted(f"Indexing {render_progress_bar(done, total)}", stream=sys.stderr),
                   end="", file=sys.stderr, flush=True)
         pending += 1
         if pending >= RECONCILE_BATCH:
@@ -916,7 +917,7 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
     try:
         raw_db_path = conn.execute("PRAGMA database_list").fetchone()[2]
     except sqlite3.Error as e:
-        print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
+        print(warning(f"Warning: search index busy ({e}); using full scan.", stream=sys.stderr), file=sys.stderr)
         return None
     # An in-memory db (empty path) is private to this process — nothing to
     # serialize against, and no real file to lock — so skip the lock there.
@@ -936,7 +937,7 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
         # Roll back the aborted reconcile transaction so a reused connection
         # can BEGIN cleanly next time.
         _rollback_quietly(conn)
-        print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
+        print(warning(f"Warning: search index busy ({e}); using full scan.", stream=sys.stderr), file=sys.stderr)
         return None
     except sqlite3.DatabaseError as e:
         # Corruption: drop the db so the next run rebuilds it cleanly.
@@ -944,7 +945,7 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
         # transient lock would be wrong, so it is handled first.)
         if isinstance(e, sqlite3.OperationalError):
             _rollback_quietly(conn)
-            print(f"Warning: search index busy ({e}); using full scan.", file=sys.stderr)
+            print(warning(f"Warning: search index busy ({e}); using full scan.", stream=sys.stderr), file=sys.stderr)
             return None
         try:
             db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
@@ -952,7 +953,7 @@ def refresh(conn: sqlite3.Connection, data_dir: Path,
             _delete_db_files(db_path)
         except sqlite3.Error:
             pass
-        print(f"Warning: search index corrupt ({e}); rebuilt on next run. Using full scan.",
+        print(warning(f"Warning: search index corrupt ({e}); rebuilt on next run. Using full scan.", stream=sys.stderr),
               file=sys.stderr)
         return None
 
@@ -971,7 +972,7 @@ def candidate_paths(conn: sqlite3.Connection, fts_query: str,
         ).fetchall()
         return {row[0] for row in rows}
     except sqlite3.Error as e:
-        print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
+        print(warning(f"Warning: search index query failed ({e}); using full scan.", stream=sys.stderr), file=sys.stderr)
         return None
 
 
@@ -1059,7 +1060,7 @@ def candidate_rows(conn: sqlite3.Connection, fts_query: str,
             (fts_query, source),
         ).fetchall()
     except sqlite3.Error as e:
-        print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
+        print(warning(f"Warning: search index query failed ({e}); using full scan.", stream=sys.stderr), file=sys.stderr)
         return None
     return [dict(zip(_ROW_KEYS, row)) for row in rows]
 
@@ -1078,7 +1079,7 @@ def all_searchable_rows(conn: sqlite3.Connection, source: str) -> Optional[list]
             (source,),
         ).fetchall()
     except sqlite3.Error as e:
-        print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
+        print(warning(f"Warning: search index query failed ({e}); using full scan.", stream=sys.stderr), file=sys.stderr)
         return None
     return [dict(zip(_ROW_KEYS, row)) for row in rows]
 
@@ -1096,7 +1097,7 @@ def browse_items(conn: sqlite3.Connection, source: str) -> Optional[list]:
             (source,),
         ).fetchall()
     except sqlite3.Error as e:
-        print(f"Warning: search index query failed ({e}); using full scan.", file=sys.stderr)
+        print(warning(f"Warning: search index query failed ({e}); using full scan.", stream=sys.stderr), file=sys.stderr)
         return None
     return [dict(zip(_BROWSE_KEYS, row)) for row in rows]
 

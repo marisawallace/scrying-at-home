@@ -21,7 +21,7 @@ from scrying_at_home.config.paths import REPO_ROOT, add_config_arg, load_env_or_
 from scrying_at_home.common.timestamps import parse_iso
 from scrying_at_home.common.text import normalize_uuid
 from scrying_at_home.common.constants import UNTITLED
-from scrying_at_home.common.ansi import muted, warning, success, error
+from scrying_at_home.common.ansi import muted, warning, error
 
 
 def find_conversation_file_via_index(config: dict, uuid: str) -> Optional[tuple[Path, str]]:

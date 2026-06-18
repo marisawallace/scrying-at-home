@@ -14,6 +14,8 @@ import sys
 from collections import Counter
 from typing import Callable, Optional
 
+from scrying_at_home.common.ansi import warning
+
 
 def parse_jsonl_lines(raw_lines, label) -> list[dict]:
     """Parse an iterable of raw JSONL strings into dicts, skipping blank lines and
@@ -28,7 +30,7 @@ def parse_jsonl_lines(raw_lines, label) -> list[dict]:
         try:
             out.append(json.loads(raw))
         except json.JSONDecodeError as e:
-            print(f"Warning: {label}:{i}: malformed JSON: {e}", file=sys.stderr)
+            print(warning(f"Warning: {label}:{i}: malformed JSON: {e}", stream=sys.stderr), file=sys.stderr)
     return out
 
 
