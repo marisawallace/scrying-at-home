@@ -338,5 +338,11 @@ def pick_and_act(results: list, query: str, exact: bool, current_host: str, demo
             view_choice(chosen, fmt="html")
             # Re-enter the picker so the user can keep browsing.
             continue
-        # action == "resume": Enter — fire the resume/open action and exit.
-        return act_on_choice(chosen, current_host, demo)
+        # action == "resume": Enter — fire the resume/open action.
+        exit_code = act_on_choice(chosen, current_host, demo)
+        # For web providers (claude.ai, chatgpt) the action just opens a browser
+        # tab, so keep the picker open to let the user open more results. Local
+        # CLIs (claude-code, codex) exec into an interactive session, so exit.
+        if not providers.is_local_cli(chosen.provider):
+            continue
+        return exit_code
