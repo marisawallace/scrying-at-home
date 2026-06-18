@@ -812,6 +812,7 @@ Examples:
                 print()
                 print(warning("Note: this conversation has newer messages, but the markdown "
                               "file has local edits — opening your edited file unchanged."))
+                print(warning(f"Move or delete {output_path} to force a refresh."))
                 print()
                 write_file = False
 
