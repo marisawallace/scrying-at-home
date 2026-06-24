@@ -38,7 +38,7 @@ from scrying_at_home.config.paths import (
 from scrying_at_home.common.timestamps import derive_updated_at
 from scrying_at_home.common.text import normalize_uuid
 from scrying_at_home.common.constants import UNTITLED
-from scrying_at_home.common.ansi import Colors
+from scrying_at_home.common.ansi import Colors, warning
 # SearchResult/Match/recency_boost are defined in result.py (a leaf that cannot
 # import this module); re-exported here so the many existing
 # `from ...search.engine import SearchResult` call sites keep resolving.
@@ -793,6 +793,58 @@ def filter_to_here(results: List[SearchResult], here_dir: Path) -> List[SearchRe
     ]
 
 
+def unescape_here_path(arg: str) -> str:
+    """Drop one level of backslash escaping so an explicit ``--here`` path token
+    names the real directory: ``foo\\ src/`` -> ``foo src/``. Leaves ``src/``
+    unchanged. Applied only to args that look like an explicit path (see
+    is_explicit_here_path)."""
+    return re.sub(r"\\(.)", r"\1", arg)
+
+
+def is_explicit_here_path(arg: str) -> bool:
+    """True when a ``--here ARG`` is an unmistakable directory reference: a single
+    token ending in ``/``. The trailing slash is the user's explicit "treat this
+    as a path" signal, so it bypasses the query-reinterpret heuristic even when no
+    sessions live there. "Single token" means no *unescaped* whitespace: ``src/``
+    and ``foo\\ src/`` are paths, but ``foo src/`` (a multi-word arg that merely
+    ends in ``/``) stays an ambiguous query candidate."""
+    if not arg.endswith("/"):
+        return False
+    return not re.search(r"\s", re.sub(r"\\.", "", arg))
+
+
+def resolve_here(here_arg: str, here_path: Path, current_cwd: Path,
+                 known_cwds: set) -> tuple:
+    """Disambiguate a ``--here ARG`` that may have swallowed the query.
+
+    ``--here`` takes an optional PATH (nargs="?"), so ``sy --here "foo bar"``
+    binds "foo bar" to that PATH and leaves the positional query empty — running
+    a no-query browse of the (usually nonexistent) directory ``<cwd>/foo bar``.
+    When ARG names no directory that holds sessions, it was almost certainly the
+    query the user meant.
+
+    Returns ``(query, here_dir, note)``:
+      - some known cwd lies under ``here_path`` -> ``(None, here_path, None)``:
+        ARG is a real session directory; keep PATH scoping (today's behavior).
+      - none does -> ``(here_arg, current_cwd, <note>)``: treat ARG as the query
+        and scope ``--here`` to the cwd (the bare-``--here`` intent). The note is
+        surfaced to the user so the reinterpretation is never silent.
+
+    Reuses filter_to_here's ``Path(...).resolve().is_relative_to(...)`` predicate,
+    so the /proj-vs-/projector sibling boundary is handled the same way.
+    """
+    here_path = Path(here_path).resolve()
+    for c in known_cwds:
+        try:
+            if Path(c).resolve().is_relative_to(here_path):
+                return (None, here_path, None)
+        except (ValueError, OSError):
+            continue
+    note = (f'No archived sessions under "{here_path}"; '
+            f'searching for "{here_arg}" instead (--here scoped to {current_cwd}).')
+    return (here_arg, current_cwd, note)
+
+
 def parse_uuid_filter(raw: str) -> List[str]:
     """Parse the --uuid value — one UUID or a comma-separated list — into a
     lowercased list, trimming whitespace and dropping empty entries.
@@ -1244,6 +1296,10 @@ def main():
     # narrows to one) and the per-block filter_to_here below does the directory
     # scoping.
     here_dir = None
+    # A string --here arg ending in "/" (e.g. `src/`) is an explicit directory
+    # reference: it forces PATH scoping and skips the query-reinterpret heuristic
+    # below. Unescape it first so `foo\ src/` resolves to the dir "foo src".
+    here_explicit_path = isinstance(args.here, str) and is_explicit_here_path(args.here)
     if args.here is not None:
         if args.here is True:
             here_dir = Path.cwd().resolve()
@@ -1252,7 +1308,8 @@ def main():
             # so a path that has since been moved, renamed, or deleted is still a
             # valid filter. A path that matches nothing falls through to
             # here_miss_hint rather than erroring.
-            here_dir = Path(args.here).expanduser().resolve()
+            raw = unescape_here_path(args.here) if here_explicit_path else args.here
+            here_dir = Path(raw).expanduser().resolve()
 
     if here_dir is not None and args.source == "llm":
         print("Error: --here cannot be combined with -s llm", file=sys.stderr)
@@ -1311,6 +1368,24 @@ def main():
                 index_conn = None
             elif failed_files:
                 print(unreadable_files_banner(failed_files), file=sys.stderr)
+
+    # --here may have swallowed the query: `sy --here "foo bar"` binds "foo bar"
+    # to --here's optional PATH (nargs="?"), leaving the positional query empty.
+    # When that path holds no sessions, reinterpret it as the query and scope
+    # --here to the cwd. Index-gated: only the index can prove "no sessions
+    # there", so under --no-index the literal PATH interpretation stands. Must
+    # run before index_browse/index_query below, which depend on query/no_query.
+    here_note = None
+    if (here_dir is not None and isinstance(args.here, str)
+            and args.query is None and index_conn is not None
+            and not here_explicit_path):
+        known = search_index.distinct_local_cli_cwds(index_conn)
+        if known is not None:
+            new_query, here_dir, here_note = resolve_here(
+                args.here, here_dir, Path.cwd().resolve(), known)
+            if new_query is not None:
+                query = new_query
+                no_query = False
 
     # --verify: prove the index path and the full scan agree for this query,
     # then exit. Needs the index (so --no-index is meaningless here) and a query.
@@ -1455,6 +1530,13 @@ def main():
         or not sys.stdin.isatty()
     )
 
+    # Surface a --here reinterpretation: the picker-with-results path shows it as
+    # a pinned banner (full-screen repaint would bury a stderr line); every other
+    # path (json/static/no-results) prints it to stderr, where it stays plain when
+    # stderr is not a TTY so json stdout and pipes are unaffected.
+    if here_note and not (use_interactive and results):
+        print(warning(here_note, stream=sys.stderr), file=sys.stderr)
+
     # Output results
     if args.json:
         print_json(results)
@@ -1475,7 +1557,7 @@ def main():
             if here_dir is not None:
                 picker_results = float_same_host_first(picker_results, current_host)
             demo = bool(config.get("DEMO_HOSTNAMES", "").strip())
-            sys.exit(interactive_picker.pick_and_act(picker_results, query, args.exact, current_host, demo))
+            sys.exit(interactive_picker.pick_and_act(picker_results, query, args.exact, current_host, demo, notice=here_note))
     else:
         print_results(results, query, exact=args.exact, current_host=current_host)
 

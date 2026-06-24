@@ -43,6 +43,13 @@ def _provider_label(result) -> tuple[str, str]:
     return result.type.upper(), "fg:ansimagenta bold"
 
 
+def _notice_fragments(notice: str) -> FormattedText:
+    """Pinned attention banner shown above the results — orange, matching
+    ansi.warning() ("a notice the user should not miss") and the current-host
+    highlight (fg:#ff8c00) used elsewhere in this picker."""
+    return FormattedText([("fg:#ff8c00 bold", f"  ⚠ {notice}")])
+
+
 def _highlight_query(text: str, query: str, exact: bool) -> FormattedText:
     """Return FormattedText with query terms highlighted.
 
@@ -126,13 +133,14 @@ def _render_result(result, query: str, exact: bool, selected: bool, current_host
 
 
 class ResultPicker:
-    def __init__(self, results: list, query: str, exact: bool, current_host: str, demo: bool = False):
+    def __init__(self, results: list, query: str, exact: bool, current_host: str, demo: bool = False, notice: str | None = None):
         # Best-first ordering: cursor starts on the best match.
         self.results = list(results)
         self.query = query
         self.exact = exact
         self.current_host = current_host
         self.demo = demo
+        self.notice = notice
         self.index = 0
         self.action = None  # "resume" | "view" | "view-html" | None
         self._selected_block_height = 1
@@ -245,7 +253,17 @@ class ResultPicker:
                 bottom=lambda: max(0, self._selected_block_height + 2),
             ),
         )
-        layout = Layout(HSplit([window]))
+        # A pinned notice banner above the results (when set) — stays put rather
+        # than scrolling off with the list, since the whole point is visibility.
+        children = []
+        if self.notice:
+            children.append(Window(
+                content=FormattedTextControl(lambda: _notice_fragments(self.notice)),
+                height=2,  # banner line + a blank separator
+                wrap_lines=True,
+            ))
+        children.append(window)
+        layout = Layout(HSplit(children))
 
         app = Application(
             layout=layout,
@@ -321,11 +339,11 @@ def view_choice(result, fmt: str = "markdown") -> int:
         return 1
 
 
-def pick_and_act(results: list, query: str, exact: bool, current_host: str, demo: bool = False) -> int:
+def pick_and_act(results: list, query: str, exact: bool, current_host: str, demo: bool = False, notice: str | None = None) -> int:
     if not results:
         print("No results to pick from.")
         return 0
-    picker = ResultPicker(results, query, exact, current_host, demo)
+    picker = ResultPicker(results, query, exact, current_host, demo, notice=notice)
     while True:
         chosen = picker.run()
         if chosen is None:

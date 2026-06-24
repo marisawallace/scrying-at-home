@@ -1144,3 +1144,21 @@ def lookup_uuid(conn: sqlite3.Connection, uuid: str) -> Optional[tuple]:
     if row is None:
         return None
     return Path(row[0]), row[1]
+
+
+def distinct_local_cli_cwds(conn: sqlite3.Connection) -> Optional[set]:
+    """Every working directory recorded for a local-CLI session (claude-code or
+    codex). None means the index could not answer, so callers should not treat
+    the result as "no sessions exist" — only a non-None empty set means that.
+
+    SOURCE_CC/SOURCE_CODEX hold the same literals items.provider stores; the
+    cwd column is NOT NULL DEFAULT '', so cwd != '' drops sessions with no
+    recorded cwd (web providers never reach this provider filter)."""
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT cwd FROM items WHERE provider IN (?, ?) AND cwd != ''",
+            (SOURCE_CC, SOURCE_CODEX),
+        ).fetchall()
+        return {row[0] for row in rows}
+    except sqlite3.Error:
+        return None

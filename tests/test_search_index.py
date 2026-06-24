@@ -782,3 +782,31 @@ def test_codex_indexes_end_to_end_against_fixture(tmp_path):
     assert counts["exec_command"] == 40
     assert counts["apply_patch"] == 14
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# distinct_local_cli_cwds
+# ---------------------------------------------------------------------------
+
+def test_distinct_local_cli_cwds(tmp_path):
+    # Backs --here disambiguation: the set of cwds with archived local-CLI
+    # sessions. Web providers and empty-cwd rows are excluded; cwds dedupe.
+    conn = si.open_index(tmp_path / "index.db")
+    rows = [
+        ("claude-code", "/home/me/proj", si.SOURCE_CC),
+        ("claude-code", "/home/me/proj", si.SOURCE_CC),   # dup cwd -> deduped
+        ("codex", "/home/me/other", si.SOURCE_CODEX),
+        ("claude", "", si.SOURCE_LLM),                    # web provider: excluded
+        ("claude-code", "", si.SOURCE_CC),                # empty cwd: excluded
+    ]
+    for i, (provider, cwd, source) in enumerate(rows):
+        cur = conn.execute(
+            "INSERT INTO files(path, source, mtime_ns, ctime_ns, size, indexed_bytes) "
+            "VALUES (?, ?, 1, 1, 1, 1)", (f"/f{i}.jsonl", source))
+        si._insert_item_row(conn, cur.lastrowid, provider, "", {
+            "uuid": f"u{i}", "item_type": "conversation", "name": "n",
+            "name_raw": "n", "created_at": "c", "updated_at": "u", "host": "",
+            "cwd": cwd, "git_branch": "", "preview": "p", "has_preview": True,
+        })
+    assert si.distinct_local_cli_cwds(conn) == {"/home/me/proj", "/home/me/other"}
+    conn.close()

@@ -127,3 +127,78 @@ def test_here_bare_is_true():
 
 def test_here_with_path_is_the_path():
     assert _here_value(["query", "--here", "/home/me/proj"]) == "/home/me/proj"
+
+
+# --- resolve_here() -----------------------------------------------------------
+# Disambiguates `sy --here ARG` (no positional query): ARG is a real session
+# directory -> keep PATH scoping; ARG names no session directory -> it was the
+# query the user meant, so reinterpret and scope --here to the cwd.
+
+
+def test_resolve_here_keeps_path_when_sessions_live_under_it():
+    q, here_dir, note = fts.resolve_here(
+        "proj", Path("/home/me/proj"), Path("/home/me"), {"/home/me/proj/src"})
+    assert q is None
+    assert here_dir == Path("/home/me/proj")
+    assert note is None
+
+
+def test_resolve_here_reinterprets_when_no_sessions_under_path():
+    q, here_dir, note = fts.resolve_here(
+        "images pdf size", Path("/home/me/images pdf size"), Path("/home/me"),
+        {"/home/me/other"})
+    assert q == "images pdf size"
+    assert here_dir == Path("/home/me")
+    assert note is not None and "images pdf size" in note
+
+
+def test_resolve_here_sibling_prefix_does_not_count_as_under():
+    # /home/me/projector must NOT satisfy a path of /home/me/proj.
+    q, here_dir, note = fts.resolve_here(
+        "proj", Path("/home/me/proj"), Path("/home/me"), {"/home/me/projector"})
+    assert q == "proj"
+    assert here_dir == Path("/home/me")
+
+
+def test_resolve_here_collision_populated_dir_scopes_not_searches():
+    # The known tradeoff: a single-token arg that IS a populated directory scopes
+    # to it rather than searching for it. Documented, and surfaced via the note
+    # on the reinterpret branch (not this one).
+    q, here_dir, note = fts.resolve_here(
+        "auth", Path("/home/me/proj/auth"), Path("/home/me/proj"),
+        {"/home/me/proj/auth"})
+    assert q is None
+    assert note is None
+
+
+# --- is_explicit_here_path() / unescape_here_path() ---------------------------
+# A trailing "/" on a single token forces PATH scoping (bypasses resolve_here).
+
+
+def test_explicit_path_single_token_trailing_slash():
+    assert fts.is_explicit_here_path("src/") is True
+
+
+def test_explicit_path_rejects_no_trailing_slash():
+    assert fts.is_explicit_here_path("src") is False
+
+
+def test_explicit_path_rejects_unescaped_space():
+    # "foo src/" is two words that happen to end in "/", so it stays an ambiguous
+    # query candidate rather than a forced path.
+    assert fts.is_explicit_here_path("foo src/") is False
+
+
+def test_explicit_path_accepts_escaped_space():
+    # "foo\ src/" is one token (escaped space) naming a dir literally "foo src".
+    assert fts.is_explicit_here_path("foo\\ src/") is True
+
+
+def test_explicit_path_allows_internal_slashes():
+    assert fts.is_explicit_here_path("a/b/") is True
+    assert fts.is_explicit_here_path("/abs/path/") is True
+
+
+def test_unescape_here_path_drops_backslashes():
+    assert fts.unescape_here_path("foo\\ src/") == "foo src/"
+    assert fts.unescape_here_path("src/") == "src/"

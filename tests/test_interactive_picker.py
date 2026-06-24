@@ -205,6 +205,18 @@ def test_provider_label(provider, type_, expected):
 
 
 # ---------------------------------------------------------------------------
+# _notice_fragments — the pinned --here reinterpretation banner
+# ---------------------------------------------------------------------------
+
+def test_notice_fragments_orange_and_carries_text():
+    frags = list(ip._notice_fragments("searching for \"foo\" instead"))
+    assert len(frags) == 1
+    style, text = frags[0]
+    assert style == "fg:#ff8c00 bold"  # same orange as the current-host highlight
+    assert "searching for \"foo\" instead" in text
+
+
+# ---------------------------------------------------------------------------
 # SearchResult.get_provider_url — URL / resume-command schemes
 # ---------------------------------------------------------------------------
 

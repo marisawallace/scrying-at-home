@@ -112,3 +112,39 @@ def test_total_miss_reports_every_source(two_source_workspace, run_cli, tmp_path
     assert "source: codex" in result.stderr
     assert str(nowhere) in result.stderr
     assert "testhost (MACHINE_NAME)" in result.stderr
+
+
+@pytest.mark.integration
+def test_here_reinterprets_swallowed_query(two_source_workspace, run_cli):
+    """`--here "alpha"` with no positional query: --here's nargs="?" binds "alpha"
+    as its PATH, but "alpha" names no session directory, so it is reinterpreted as
+    the query and --here is scoped to the cwd. The here session matches; the note
+    explains the switch (and codex, recorded elsewhere, stays scoped out)."""
+    env_path, here_dir = two_source_workspace
+    result = run_cli(
+        "full_text_search_chats_archive.py", "--here", "alpha",
+        config=env_path, cwd=here_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cc-here" in result.stdout
+    assert "No results found." not in result.stdout
+    assert 'searching for "alpha"' in result.stderr
+
+
+@pytest.mark.integration
+def test_here_trailing_slash_forces_path_no_reinterpret(two_source_workspace, run_cli):
+    """A --here arg ending in "/" is an explicit directory reference: even though
+    no session lives under `./newsub`, it is NOT reinterpreted as a query (no
+    "searching for" note). It scopes as a path and falls through to the normal
+    empty-result miss hint, which names the resolved directory."""
+    env_path, here_dir = two_source_workspace
+    result = run_cli(
+        "full_text_search_chats_archive.py", "--here", "newsub/",
+        config=env_path, cwd=here_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "No results found." in result.stdout
+    assert "searching for" not in result.stderr        # heuristic suppressed
+    assert str(here_dir / "newsub") in result.stderr   # scoped as a path
