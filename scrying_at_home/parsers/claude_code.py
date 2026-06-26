@@ -24,19 +24,64 @@ from scrying_at_home.parsers.transcript_jsonl import (
     build_turns,
 )
 
-# Sessions started via a slash command begin with harness-generated user lines
-# (<local-command-caveat> boilerplate, then the <command-name> invocation)
-# rather than a typed prompt. These must not be mistaken for human prompts
-# when deriving a conversation name.
-_COMMAND_BOILERPLATE_PREFIXES = (
+# A slash command typed into the prompt is recorded by the harness as a user
+# line carrying <command-name>/<command-args> tags (plus a <command-message>
+# echo). Tag order varies and <command-args> is omitted when there were none,
+# e.g.:  <command-message>code-review</command-message>
+#        <command-name>/code-review</command-name>
+# We reconstruct the typed form ('/code-review') rather than show the raw tags,
+# since the invocation is human input. By contrast the lines below are pure
+# machine boilerplate the harness injects as user turns — the caveat blurb, a
+# command's captured stdout/stderr, and background-task-completion notices —
+# which the human did not type, so they are dropped from naming/search/view.
+# (Extend this tuple as new harness-injected user-line wrappers appear.)
+_MACHINE_BOILERPLATE_PREFIXES = (
     "<local-command-caveat>",
-    "<command-name>",
     "<local-command-stdout>",
     "<local-command-stderr>",
+    "<task-notification>",
 )
 
 _COMMAND_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
 _COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+
+
+def _reconstruct_command(content: str) -> Optional[str]:
+    """Reconstruct the slash command a human typed from its harness encoding.
+
+    '<command-name>/code-review</command-name>' becomes '/code-review';
+    a '/loop' name with '<command-args>5m /foo</command-args>' becomes
+    '/loop 5m /foo'. Tag order is irrelevant and <command-args> is optional.
+
+    Returns None when `content` holds no <command-name> tag.
+    """
+    name_match = _COMMAND_NAME_RE.search(content)
+    if not name_match:
+        return None
+    name = name_match.group(1).strip()
+    args_match = _COMMAND_ARGS_RE.search(content)
+    args = args_match.group(1).strip() if args_match else ""
+    return f"{name} {args}".strip()
+
+
+def _user_line_text(line: dict) -> Optional[str]:
+    """The text a user line contributes to naming, search, and rendering.
+
+    Returns a typed prompt verbatim, or — for a slash-command turn — the
+    reconstructed invocation ('/code-review'). Returns None for lines the human
+    did not type: non-user / tool_result lines (non-string content), isMeta
+    context, and machine boilerplate (caveat blurb, command stdout/stderr). The
+    raw archive keeps every line verbatim regardless.
+    """
+    if line.get("type") != "user" or line.get("isMeta"):
+        return None
+    content = line.get("message", {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    if content.lstrip().startswith(_MACHINE_BOILERPLATE_PREFIXES):
+        return None
+    command = _reconstruct_command(content)
+    return command if command is not None else content
 
 
 def parse_jsonl(filepath: Path) -> list[dict]:
@@ -124,19 +169,23 @@ def extract_searchable_text(lines: list[dict]) -> list[str]:
     """Extract text suitable for full-text search.
 
     Includes:
-      - User messages where content is a string (actual human prompts)
+      - Text a human typed: prompts verbatim, and slash commands reconstructed
+        to their typed form ('/code-review'); see _user_line_text
       - Assistant message content blocks of type "text"
 
-    Excludes everything else (thinking, tool_use, tool_results, system, etc.).
+    Excludes everything else: thinking, tool_use, tool_results, system, and
+    machine boilerplate (isMeta context, the <local-command-caveat> blurb, and
+    command stdout/stderr). The raw archive retains those lines verbatim; they
+    are simply not indexed as searchable text.
     """
     texts = []
     for line in lines:
         msg_type = line.get("type")
 
         if msg_type == "user":
-            content = line.get("message", {}).get("content")
-            if isinstance(content, str) and content.strip():
-                texts.append(content)
+            text = _user_line_text(line)
+            if text:
+                texts.append(text)
 
         elif msg_type == "assistant":
             for block in line.get("message", {}).get("content", []):
@@ -165,17 +214,19 @@ def count_tool_uses(lines: list[dict]) -> "Counter[str]":
 def _classify_turn_events(line: dict) -> list:
     """Per-line (kind, value, timestamp) events for build_turns (Claude Code).
 
-    A user line with string content is one user event; an assistant line opens
-    the turn (pinning its timestamp to this first assistant line) and contributes
-    one event per text / tool_use block. Tool_result user lines (list content)
-    and thinking blocks produce nothing.
+    A user line a human typed (prompt, or reconstructed slash command — see
+    _user_line_text) is one user event; an assistant line opens the turn
+    (pinning its timestamp to this first assistant line) and contributes one
+    event per text / tool_use block. Tool_result user lines (list content),
+    machine boilerplate (isMeta, caveat blurb, command stdout/stderr), and
+    thinking blocks produce nothing.
     """
     ts = line.get("timestamp", "")
     msg_type = line.get("type")
     if msg_type == "user":
-        content = line.get("message", {}).get("content")
-        if isinstance(content, str) and content.strip():
-            return [("user", content, ts)]
+        text = _user_line_text(line)
+        if text:
+            return [("user", text, ts)]
         return []
     if msg_type == "assistant":
         events = [("assistant_open", None, ts)]
@@ -216,23 +267,20 @@ def find_session_file(cc_data_dir: Path, session_id: str) -> Optional[Path]:
 
 
 def _is_human_prompt(line: dict) -> bool:
-    """True if a user line holds a prompt the human actually typed.
-
-    Excludes harness-generated lines: isMeta lines and slash-command
-    boilerplate (caveat/command-name/command-output tags).
+    """True if a user line is descriptive prose the human typed — not a slash
+    command and not machine boilerplate. Naming prefers such prose over a bare
+    command invocation; see _user_line_text for the shared filtering.
     """
-    if line.get("type") != "user" or line.get("isMeta"):
+    if _user_line_text(line) is None:
         return False
-    content = line.get("message", {}).get("content")
-    if not isinstance(content, str) or not content.strip():
-        return False
-    return not content.lstrip().startswith(_COMMAND_BOILERPLATE_PREFIXES)
+    return _reconstruct_command(line["message"]["content"]) is None
 
 
 def _slash_command_invocation(lines: list[dict]) -> str:
     """Reconstruct the first slash-command invocation, e.g. '/loop 5m'.
 
-    Returns '' if the session contains no <command-name> line.
+    Checks user and system lines. Returns '' if the session contains no
+    <command-name> line.
     """
     for line in lines:
         if line.get("type") == "user":
@@ -243,13 +291,9 @@ def _slash_command_invocation(lines: list[dict]) -> str:
             continue
         if not isinstance(content, str):
             continue
-        name_match = _COMMAND_NAME_RE.search(content)
-        if not name_match:
-            continue
-        name = name_match.group(1).strip()
-        args_match = _COMMAND_ARGS_RE.search(content)
-        args = args_match.group(1).strip() if args_match else ""
-        return f"{name} {args}".strip()
+        command = _reconstruct_command(content)
+        if command:
+            return command
     return ""
 
 
